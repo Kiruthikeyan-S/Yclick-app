@@ -12,6 +12,7 @@ import {
 } from 'firebase/auth';
 import { doc, getDoc, setDoc, deleteDoc } from 'firebase/firestore';
 import { auth, db, isFirebaseConfigured } from '../services/firebase';
+import { supabase, isSupabaseConfigured } from '../services/supabase';
 import { UserProfile } from '../types';
 
 interface AuthContextType {
@@ -25,6 +26,7 @@ interface AuthContextType {
   resendVerification: () => Promise<{ success: boolean; error?: string }>;
   deleteAccount: () => Promise<{ success: boolean; error?: string }>;
   refreshUser: () => Promise<void>;
+  loginAsGuest: () => void;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -94,72 +96,136 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, [isFirebaseReady]);
 
   const login = async (email: string, pass: string) => {
-    if (!isFirebaseReady) {
-      if (email && pass.length >= 6) {
-        setUser({
-          ...DEMO_USER,
-          email,
-          displayName: email.split('@')[0] || 'Demo Designer',
+    // 1. Try Supabase Auth first
+    if (isSupabaseConfigured) {
+      try {
+        const { data: supaData, error: supaErr } = await supabase.auth.signInWithPassword({
+          email: email.trim(),
+          password: pass,
         });
+
+        if (!supaErr && supaData.user) {
+          setUser({
+            uid: supaData.user.id,
+            email: supaData.user.email || email.trim(),
+            displayName: supaData.user.user_metadata?.displayName || email.split('@')[0] || 'Space Designer',
+            createdAt: supaData.user.created_at || new Date().toISOString(),
+            isEmailVerified: true,
+          });
+          return { success: true };
+        }
+      } catch (err) {
+        console.warn('Supabase sign-in note:', err);
+      }
+    }
+
+    // 2. Try Firebase Auth if configured
+    if (isFirebaseReady && auth) {
+      try {
+        await signInWithEmailAndPassword(auth, email.trim(), pass);
         return { success: true };
+      } catch (err: any) {
+        let message = 'Failed to sign in. Please verify your credentials or tap Create Account.';
+        if (err.code === 'auth/user-not-found' || err.code === 'auth/invalid-credential') {
+          message = 'No account found. Tap "Create Account" below to register.';
+        } else if (err.code === 'auth/wrong-password') {
+          message = 'Incorrect password. Please try again.';
+        } else if (err.code === 'auth/too-many-requests') {
+          message = 'Access temporarily disabled due to failed attempts. Try again later.';
+        }
+        return { success: false, error: message };
       }
-      return { success: false, error: 'Password must be at least 6 characters' };
     }
 
-    try {
-      await signInWithEmailAndPassword(auth!, email.trim(), pass);
-      return { success: true };
-    } catch (err: any) {
-      let message = 'Failed to sign in. Please verify your credentials.';
-      if (err.code === 'auth/user-not-found' || err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential') {
-        message = 'Invalid email or password. Please try again.';
-      } else if (err.code === 'auth/too-many-requests') {
-        message = 'Access temporarily disabled due to many failed attempts. Try again later.';
-      }
-      return { success: false, error: message };
-    }
-  };
-
-  const signup = async (name: string, email: string, pass: string) => {
-    if (!isFirebaseReady) {
+    // 3. Fallback demo login if offline
+    if (email && pass.length >= 6) {
       setUser({
-        uid: `demo-${Date.now()}`,
+        ...DEMO_USER,
         email,
-        displayName: name.trim() || 'Demo Designer',
-        createdAt: new Date().toISOString(),
-        isEmailVerified: true,
+        displayName: email.split('@')[0] || 'Demo Designer',
       });
       return { success: true };
     }
+    return { success: false, error: 'Password must be at least 6 characters' };
+  };
 
-    try {
-      const res = await createUserWithEmailAndPassword(auth!, email.trim(), pass);
-      await fbUpdateProfile(res.user, { displayName: name.trim() });
-      if (db) {
-        await setDoc(doc(db, 'users', res.user.uid), {
-          uid: res.user.uid,
-          email: res.user.email,
-          displayName: name.trim(),
-          createdAt: new Date().toISOString(),
-        });
-      }
+  const signup = async (name: string, email: string, pass: string) => {
+    // 1. Register with Supabase Auth
+    if (isSupabaseConfigured) {
       try {
-        await sendEmailVerification(res.user);
-      } catch (e) {
-        console.warn('Email verification send note:', e);
+        const { data: supaData, error: supaErr } = await supabase.auth.signUp({
+          email: email.trim(),
+          password: pass,
+          options: {
+            data: { displayName: name.trim() },
+          },
+        });
+
+        if (!supaErr && supaData.user) {
+          setUser({
+            uid: supaData.user.id,
+            email: supaData.user.email || email.trim(),
+            displayName: name.trim() || 'Space Designer',
+            createdAt: new Date().toISOString(),
+            isEmailVerified: true,
+          });
+          return { success: true };
+        }
+
+        if (supaErr) {
+          return { success: false, error: supaErr.message };
+        }
+      } catch (err: any) {
+        console.warn('Supabase signup note:', err);
       }
-      return { success: true };
-    } catch (err: any) {
-      let message = 'Could not create account.';
-      if (err.code === 'auth/email-already-in-use') {
-        message = 'An account with this email already exists.';
-      } else if (err.code === 'auth/weak-password') {
-        message = 'Password should be at least 6 characters.';
-      } else if (err.code === 'auth/invalid-email') {
-        message = 'Please provide a valid email address.';
-      }
-      return { success: false, error: message };
     }
+
+    // 2. Register with Firebase if available
+    if (isFirebaseReady && auth) {
+      try {
+        const res = await createUserWithEmailAndPassword(auth, email.trim(), pass);
+        await fbUpdateProfile(res.user, { displayName: name.trim() });
+        if (db) {
+          await setDoc(doc(db, 'users', res.user.uid), {
+            uid: res.user.uid,
+            email: res.user.email,
+            displayName: name.trim(),
+            createdAt: new Date().toISOString(),
+          });
+        }
+        return { success: true };
+      } catch (err: any) {
+        let message = 'Could not create account.';
+        if (err.code === 'auth/email-already-in-use') {
+          message = 'An account with this email already exists. Try signing in.';
+        } else if (err.code === 'auth/weak-password') {
+          message = 'Password should be at least 6 characters.';
+        } else if (err.code === 'auth/invalid-email') {
+          message = 'Please provide a valid email address.';
+        }
+        return { success: false, error: message };
+      }
+    }
+
+    // 3. Fallback demo user
+    setUser({
+      uid: `designer-${Date.now()}`,
+      email,
+      displayName: name.trim() || 'Demo Designer',
+      createdAt: new Date().toISOString(),
+      isEmailVerified: true,
+    });
+    return { success: true };
+  };
+
+  const loginAsGuest = () => {
+    setUser({
+      uid: `guest-${Date.now()}`,
+      email: 'guest@yclick.design',
+      displayName: 'Kiruthikeyan (Designer)',
+      createdAt: new Date().toISOString(),
+      isEmailVerified: true,
+    });
   };
 
   const logout = async () => {
@@ -232,6 +298,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         resendVerification,
         deleteAccount,
         refreshUser,
+        loginAsGuest,
       }}
     >
       {children}

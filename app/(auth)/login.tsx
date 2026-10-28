@@ -11,7 +11,7 @@ import { Header } from '../../src/components/Header';
 
 export default function LoginScreen() {
   const router = useRouter();
-  const { login } = useAuth();
+  const { login, loginAsGuest } = useAuth();
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -81,6 +81,17 @@ export default function LoginScreen() {
             style={styles.submitBtn}
           />
 
+          <TouchableOpacity
+            style={styles.guestBtn}
+            activeOpacity={0.7}
+            onPress={() => {
+              loginAsGuest();
+              router.replace('/(tabs)');
+            }}
+          >
+            <Text style={styles.guestBtnText}>Continue as Guest / Preview →</Text>
+          </TouchableOpacity>
+
           <View style={styles.footerRow}>
             <Text style={styles.footerText}>Don't have an account? </Text>
             <TouchableOpacity onPress={() => router.push('/(auth)/signup')}>
@@ -142,7 +153,18 @@ const styles = StyleSheet.create({
   },
   submitBtn: {
     width: '100%',
+    marginBottom: Spacing.md,
+  },
+  guestBtn: {
+    paddingVertical: 12,
+    alignItems: 'center',
     marginBottom: Spacing.lg,
+  },
+  guestBtnText: {
+    fontSize: 14,
+    color: Colors.textSecondary,
+    fontWeight: '600',
+    textDecorationLine: 'underline',
   },
   footerRow: {
     flexDirection: 'row',

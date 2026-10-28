@@ -12,6 +12,7 @@ import {
 import { useAuth } from './AuthContext';
 import { DEMO_VARIANTS, DEMO_SUGGESTIONS, DEMO_PRODUCTS, DEFAULT_SCENE_SETTINGS } from '../services/demoData';
 import { requestDesignGeneration } from '../services/api';
+import { uploadRoomPhotoToSupabase } from '../services/supabase';
 
 const DEFAULT_PREFERENCES: DesignPreferences = {
   categoryId: 'home-rooms',
@@ -138,8 +139,22 @@ export const DesignProjectProvider: React.FC<{ children: React.ReactNode }> = ({
     setErrorMessage(null);
 
     try {
-      // Attempt to invoke the Python FastAPI backend
-      const res = await requestDesignGeneration(preferences, user?.uid || 'guest');
+      // 1. Upload captured photo to Supabase free storage if local file URI
+      let effectivePhotoUri = preferences.photoUri;
+      if (effectivePhotoUri && !effectivePhotoUri.startsWith('http')) {
+        try {
+          const uploadRes = await uploadRoomPhotoToSupabase(effectivePhotoUri);
+          if (uploadRes.success && uploadRes.publicUrl) {
+            effectivePhotoUri = uploadRes.publicUrl;
+            setPreferences(prev => ({ ...prev, photoUri: effectivePhotoUri }));
+          }
+        } catch (uploadErr) {
+          console.warn('Supabase photo upload note:', uploadErr);
+        }
+      }
+
+      // 2. Attempt to invoke the Python FastAPI backend
+      const res = await requestDesignGeneration({ ...preferences, photoUri: effectivePhotoUri }, user?.uid || 'guest');
       
       let variants: DesignVariant[] = DEMO_VARIANTS;
       let suggestions: ImprovementSuggestion[] = DEMO_SUGGESTIONS;

@@ -53,7 +53,7 @@ class ImprovementSuggestionModel(BaseModel):
 
 class ProductRecommendationModel(BaseModel):
     id: str
-    name: string_ = Field(default='', alias='name')
+    name: str = Field(default='', alias='name')
     category: str
     imageUrl: str
     reason: str
