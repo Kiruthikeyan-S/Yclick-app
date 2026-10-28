@@ -1,0 +1,54 @@
+{
+  "expo": {
+    "name": "YClick",
+    "slug": "yclick",
+    "scheme": "yclick",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "backgroundColor": "#F7F8F4",
+    "ios": {
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSCameraUsageDescription": "YClick requires camera access to photograph your room or space for AI interior redesign.",
+        "NSPhotoLibraryUsageDescription": "YClick requires photo library access to select photos of your space for AI interior redesign."
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#F7F8F4",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE"
+      ],
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-status-bar",
+      "expo-sharing",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow YClick to access your camera to take photos of your spaces for AI redesign."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow YClick to access your gallery to select room and space photos for AI redesign."
+        }
+      ],
+      "expo-font"
+    ]
+  }
+}

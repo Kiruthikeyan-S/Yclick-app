@@ -1,0 +1,249 @@
+rules_version = '2';
+
+// ===============================================================
+// Assumed Data Model
+// ===============================================================
+//
+// Application: YClick Mobile Interior & Space Design
+//
+// 1. Collection: /users/{userId}
+//    Document ID: Firebase Auth UID ({userId})
+//    Purpose: Private user profile
+//    Fields:
+//      - uid: string (required, immutable, must equal userId and request.auth.uid)
+//      - email: string (required, valid email pattern, max 120 chars)
+//      - displayName: string (required, 1-100 chars)
+//      - createdAt: string or timestamp (required, immutable, 10-50 chars if string)
+//      - updatedAt: string or timestamp (optional, 10-50 chars if string)
+//      - isEmailVerified: bool (optional)
+//      - photoURL: string (optional, max 2048 chars)
+//      - phoneNumber: string (optional, max 30 chars)
+//
+// 2. Collection: /users/{userId}/designs/{designId}
+//    Document ID: Generated design project ID ({designId})
+//    Purpose: AI-generated design projects and room transformations
+//    Fields:
+//      - id: string (optional, 1-100 chars)
+//      - userId: string (required, immutable, must equal userId and request.auth.uid)
+//      - title: string (optional, 1-150 chars)
+//      - originalPhotoUri: string (required, URI/URL format, max 2048 chars)
+//      - status: string (required, one of ['draft', 'analyzing', 'generating', 'completed', 'failed'])
+//      - preferences: map (required, validated design configuration, max 30 keys)
+//      - variants: list (required, design makeover options, max 20 items)
+//      - suggestions: list (required, improvement roadmap, max 50 items)
+//      - products: list (required, product recommendations, max 100 items)
+//      - sceneSettings: map (required, 3D room styling options, max 20 keys)
+//      - createdAt: string or timestamp (required, immutable, 10-50 chars if string)
+//      - updatedAt: string or timestamp (required, 10-50 chars if string)
+//      - selectedVariantId: string (optional, max 100 chars)
+//      - error: string (optional, max 1000 chars)
+//
+// ===============================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Global Default Deny
+    // ===============================================================
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    // Check if client is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Check if the current user is the owner matching the path parameter
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // Verify all required fields are present in the incoming document
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    // Verify only authorized fields are present in the document
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    // Ensure specified critical fields are not modified during an update
+    function areImmutableFieldsUnchanged(fields) {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(fields);
+    }
+
+    // Validate string types and bounded lengths to prevent resource exhaustion / DoS
+    function isValidString(val, minLen, maxLen) {
+      return val is string &&
+        val.size() >= minLen &&
+        val.size() <= maxLen;
+    }
+
+    // Validate timestamps (supports Firestore Timestamp objects and ISO 8601 strings)
+    function isValidDate(val) {
+      return val is timestamp ||
+        (val is string && val.size() >= 10 && val.size() <= 50);
+    }
+
+    // Validate email format and bounded length
+    function isValidEmail(email) {
+      return email is string &&
+        email.size() <= 120 &&
+        email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    // Validate array/list bounds
+    function isValidList(val, maxSize) {
+      return val is list && val.size() <= maxSize;
+    }
+
+    // Validate URI/URL length and basic scheme
+    function isValidUri(uri) {
+      return uri is string &&
+        uri.size() <= 2048 &&
+        (
+          uri.matches("^https?://.*") ||
+          uri.matches("^file://.*") ||
+          uri.matches("^gs://.*") ||
+          uri.matches("^ph://.*") ||
+          uri.matches("^data:image/.*") ||
+          uri.size() > 0
+        );
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    // Validates /users/{userId} document payload
+    function isValidUserProfile(data, userId) {
+      let allowedFields = [
+        'uid', 'email', 'displayName', 'createdAt', 'updatedAt',
+        'isEmailVerified', 'photoURL', 'phoneNumber'
+      ];
+      let requiredFields = ['uid', 'email', 'displayName', 'createdAt'];
+
+      return hasRequiredFields(requiredFields) &&
+        hasOnlyAllowedFields(allowedFields) &&
+        data.uid == userId &&
+        data.uid == request.auth.uid &&
+        isValidEmail(data.email) &&
+        isValidString(data.displayName, 1, 100) &&
+        isValidDate(data.createdAt) &&
+        (!('updatedAt' in data) || isValidDate(data.updatedAt)) &&
+        (!('isEmailVerified' in data) || data.isEmailVerified is bool) &&
+        (!('photoURL' in data) || (data.photoURL is string && data.photoURL.size() <= 2048)) &&
+        (!('phoneNumber' in data) || (data.phoneNumber is string && data.phoneNumber.size() <= 30));
+    }
+
+    // Validates preferences map inside design document
+    function isValidPreferences(prefs) {
+      let requiredPrefKeys = [
+        'categoryId', 'subcategoryId', 'photoUri',
+        'consentGiven', 'budgetChoice', 'style'
+      ];
+
+      return prefs is map &&
+        prefs.size() <= 30 &&
+        prefs.keys().hasAll(requiredPrefKeys) &&
+        isValidString(prefs.categoryId, 1, 50) &&
+        isValidString(prefs.subcategoryId, 1, 50) &&
+        isValidString(prefs.photoUri, 0, 2048) &&
+        prefs.consentGiven is bool &&
+        isValidString(prefs.budgetChoice, 1, 50) &&
+        isValidString(prefs.style, 1, 50) &&
+        (!('itemsToKeep' in prefs) || isValidList(prefs.itemsToKeep, 30)) &&
+        (!('improvementGoals' in prefs) || isValidList(prefs.improvementGoals, 30)) &&
+        (!('constraints' in prefs) || isValidList(prefs.constraints, 30)) &&
+        (!('additionalNotes' in prefs) || isValidString(prefs.additionalNotes, 0, 1000)) &&
+        (!('roomMeasurements' in prefs) || isValidString(prefs.roomMeasurements, 0, 200)) &&
+        (!('cityPincode' in prefs) || isValidString(prefs.cityPincode, 0, 50)) &&
+        (!('categoryAnswers' in prefs) || prefs.categoryAnswers is map);
+    }
+
+    // Validates sceneSettings map inside design document
+    function isValidSceneSettings(settings) {
+      return settings is map &&
+        settings.size() <= 20 &&
+        (!('wallColor' in settings) || isValidString(settings.wallColor, 1, 30)) &&
+        (!('floorType' in settings) || isValidString(settings.floorType, 1, 30)) &&
+        (!('lightingPreset' in settings) || isValidString(settings.lightingPreset, 1, 30)) &&
+        (!('cameraPreset' in settings) || isValidString(settings.cameraPreset, 1, 30)) &&
+        (!('furnitureVisible' in settings) || settings.furnitureVisible is map);
+    }
+
+    // Validates /users/{userId}/designs/{designId} document payload
+    function isValidDesignProject(data, userId) {
+      let allowedFields = [
+        'id', 'userId', 'title', 'originalPhotoUri', 'status',
+        'preferences', 'variants', 'suggestions', 'products',
+        'sceneSettings', 'createdAt', 'updatedAt',
+        'selectedVariantId', 'error'
+      ];
+      let requiredFields = [
+        'userId', 'originalPhotoUri', 'status',
+        'preferences', 'variants', 'suggestions', 'products',
+        'sceneSettings', 'createdAt', 'updatedAt'
+      ];
+
+      return hasRequiredFields(requiredFields) &&
+        hasOnlyAllowedFields(allowedFields) &&
+        data.userId == userId &&
+        data.userId == request.auth.uid &&
+        data.status in ['draft', 'analyzing', 'generating', 'completed', 'failed'] &&
+        isValidUri(data.originalPhotoUri) &&
+        isValidPreferences(data.preferences) &&
+        isValidSceneSettings(data.sceneSettings) &&
+        isValidList(data.variants, 20) &&
+        isValidList(data.suggestions, 50) &&
+        isValidList(data.products, 100) &&
+        isValidDate(data.createdAt) &&
+        isValidDate(data.updatedAt) &&
+        (!('id' in data) || isValidString(data.id, 1, 100)) &&
+        (!('title' in data) || isValidString(data.title, 1, 150)) &&
+        (!('selectedVariantId' in data) || isValidString(data.selectedVariantId, 1, 100)) &&
+        (!('error' in data) || isValidString(data.error, 0, 1000));
+    }
+
+    // ===============================================================
+    // Collections
+    // ===============================================================
+
+    // User Profile Documents
+    match /users/{userId} {
+      // Only the authenticated owner can read or delete their profile
+      allow read, delete: if isOwner(userId);
+
+      // Create must be performed by authenticated owner with valid schema
+      allow create: if isOwner(userId) &&
+                       isValidUserProfile(request.resource.data, userId);
+
+      // Update must be performed by authenticated owner, schema re-validated, immutable fields locked
+      allow update: if isOwner(userId) &&
+                       isValidUserProfile(request.resource.data, userId) &&
+                       areImmutableFieldsUnchanged(['uid', 'createdAt']);
+
+      // User's Design Projects Subcollection
+      match /designs/{designId} {
+        // Only the owner can view or remove their design projects
+        allow read, delete: if isOwner(userId);
+
+        // Project creation requires ownership matching auth UID and comprehensive payload validation
+        allow create: if isOwner(userId) &&
+                         isValidDesignProject(request.resource.data, userId);
+
+        // Updates must preserve ownership and creation timestamps, while re-validating the schema
+        allow update: if isOwner(userId) &&
+                         isValidDesignProject(request.resource.data, userId) &&
+                         areImmutableFieldsUnchanged(['userId', 'createdAt']);
+      }
+    }
+  }
+}
