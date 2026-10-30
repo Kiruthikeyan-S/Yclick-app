@@ -47,11 +47,12 @@ async def chat_with_designer(req: ChatRequest):
 
 @router.post("/analyze", response_model=AnalyzeImageResponse)
 async def analyze_space_image(file: UploadFile = File(...)):
-    """Analyze an uploaded room/space photograph to identify geometry, light sources, and features."""
+    """Analyze an uploaded room/space photograph with Vision AI to identify flaws, items to remove, and DIY fixes."""
     if not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Uploaded file must be a valid image format (JPEG/PNG/WEBP)")
     
-    analysis = SpatialAnalysisEngine.analyze_space_photo(file.filename or "space.jpg")
+    content = await file.read()
+    analysis = await SpatialAnalysisEngine.analyze_space_photo(image_bytes=content, filename=file.filename or "space.jpg")
     return analysis
 
 @router.post("/generate", response_model=GenerateDesignResponse)

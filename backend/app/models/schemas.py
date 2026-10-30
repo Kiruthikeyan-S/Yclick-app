@@ -73,8 +73,19 @@ class GenerateDesignResponse(BaseModel):
     isDemo: bool = False
     message: Optional[str] = None
 
+class RoomScores(BaseModel):
+    lighting: str = "5/10"
+    spaciousness: str = "6/10"
+    coziness: str = "5/10"
+
 class AnalyzeImageResponse(BaseModel):
     roomType: str
-    detectedLighting: str
-    detectedFeatures: List[str]
-    spatialNotes: str
+    detectedObjects: List[str] = []
+    correctionsNeeded: List[str] = []
+    itemsToRemove: List[str] = []
+    diySelfImprovements: List[str] = []
+    suggestedTemplate: str = "Modern Scandinavian"
+    scores: Optional[RoomScores] = None
+    detectedLighting: Optional[str] = "Natural daylight with secondary shadows"
+    detectedFeatures: Optional[List[str]] = []
+    spatialNotes: Optional[str] = None

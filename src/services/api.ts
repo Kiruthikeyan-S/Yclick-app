@@ -1,4 +1,6 @@
-import { DesignPreferences, DesignProject, DesignVariant, ImprovementSuggestion, ProductRecommendation } from '../types';
+import { DesignPreferences, DesignProject, DesignVariant, ImprovementSuggestion, ProductRecommendation, RoomAnalysisData } from '../types';
+
+export { RoomAnalysisData };
 
 export const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL || 'http://10.0.2.2:8000'; // 10.0.2.2 is Android emulator host loopback, or use local IP
 
@@ -7,6 +9,28 @@ export interface ApiResponse<T> {
   data?: T;
   error?: string;
   isDemo?: boolean;
+}
+
+export interface ChatMessageParam {
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+}
+
+export async function askDesignerChat(messages: ChatMessageParam[], roomContext: string = ''): Promise<{ success: boolean; reply: string; error?: string }> {
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/designs/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages, roomContext }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      return { success: true, reply: data.reply };
+    }
+    return { success: false, reply: '', error: `HTTP ${res.status}` };
+  } catch (err: any) {
+    return { success: false, reply: '', error: err.message };
+  }
 }
 
 export async function checkBackendHealth(): Promise<{ status: string; isLive: boolean; error?: string }> {
@@ -25,7 +49,7 @@ export async function checkBackendHealth(): Promise<{ status: string; isLive: bo
   }
 }
 
-export async function analyzeImage(photoUri: string, idToken?: string): Promise<ApiResponse<{ roomType: string; features: string[] }>> {
+export async function analyzeImage(photoUri: string, idToken?: string): Promise<ApiResponse<RoomAnalysisData>> {
   try {
     const formData = new FormData();
     const filename = photoUri.split('/').pop() || 'photo.jpg';
@@ -50,7 +74,7 @@ export async function analyzeImage(photoUri: string, idToken?: string): Promise<
       throw new Error(`Analyze error: ${res.status} - ${err}`);
     }
 
-    const data = await res.json();
+    const data: RoomAnalysisData = await res.json();
     return { success: true, data };
   } catch (err: any) {
     return { success: false, error: err.message };

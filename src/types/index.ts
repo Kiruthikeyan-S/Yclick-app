@@ -1,3 +1,22 @@
+export interface RoomScores {
+  lighting: string;
+  spaciousness: string;
+  coziness: string;
+}
+
+export interface RoomAnalysisData {
+  roomType: string;
+  detectedObjects: string[];
+  correctionsNeeded: string[];
+  itemsToRemove: string[];
+  diySelfImprovements: string[];
+  suggestedTemplate: string;
+  scores?: RoomScores;
+  detectedLighting?: string;
+  detectedFeatures?: string[];
+  spatialNotes?: string;
+}
+
 export interface UserProfile {
   uid: string;
   email: string;

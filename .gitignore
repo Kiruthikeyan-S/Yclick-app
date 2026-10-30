@@ -38,6 +38,7 @@ yarn-error.*
 backend/venv/
 backend/.env
 backend/static/
+assets/test_flux.jpg
 __pycache__/
 *.pyc
 .pytest_cache/
