@@ -1,6 +1,7 @@
 import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 from .api.endpoints import router as design_router
 
@@ -11,6 +12,11 @@ app = FastAPI(
     description="FastAPI service for spatial analysis, AI image-to-image redesign, and practical improvement reports.",
     version="1.0.0"
 )
+
+# Mount static directory for generated images
+static_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static")
+os.makedirs(os.path.join(static_dir, "generated"), exist_ok=True)
+app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 # CORS configuration
 origins = os.getenv("CORS_ORIGINS", "*").split(",")
