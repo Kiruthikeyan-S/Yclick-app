@@ -9,8 +9,41 @@ from ..models.schemas import (
 from ..services.image_provider import get_image_provider
 from ..services.product_provider import get_product_provider
 from ..services.ai_analysis import SpatialAnalysisEngine
+from ..services.groq_service import groq_service
+from pydantic import BaseModel
+from typing import List, Dict
+
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+class ChatRequest(BaseModel):
+    messages: List[ChatMessage]
+    roomContext: str = ""
+
+class ChatResponse(BaseModel):
+    reply: str
+    provider: str = "groq-oss-120b"
 
 router = APIRouter(prefix="/api/designs", tags=["designs"])
+
+@router.post("/chat", response_model=ChatResponse)
+async def chat_with_designer(req: ChatRequest):
+    """Chat with the AI interior architect powered by Groq."""
+    system_prompt = (
+        "You are YClick's Senior Interior Architect and Spatial Designer. "
+        "You provide actionable, budget-conscious, aesthetic interior advice for Indian homes and modern spaces. "
+        "Keep your tone encouraging, sophisticated, and practical with measurements and lighting temperatures (e.g. 3000K warm white)."
+    )
+    if req.roomContext:
+        system_prompt += f"\nCurrent Room Context: {req.roomContext}"
+
+    groq_messages = [{"role": "system", "content": system_prompt}]
+    for m in req.messages:
+        groq_messages.append({"role": m.role, "content": m.content})
+
+    reply = await groq_service.chat(groq_messages, max_tokens=600)
+    return ChatResponse(reply=reply)
 
 @router.post("/analyze", response_model=AnalyzeImageResponse)
 async def analyze_space_image(file: UploadFile = File(...)):
@@ -37,7 +70,7 @@ async def generate_designs(request: GenerateDesignRequest):
     variants = await image_provider.generate_variants(request.preferences)
 
     # 2. Generate prioritized improvement recommendations
-    suggestions = SpatialAnalysisEngine.generate_practical_recommendations(request.preferences)
+    suggestions = await SpatialAnalysisEngine.generate_practical_recommendations(request.preferences)
 
     # 3. Retrieve matching product recommendations
     products = await product_provider.get_recommendations(request.preferences)

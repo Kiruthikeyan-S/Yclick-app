@@ -1,5 +1,6 @@
 from typing import List
 from ..models.schemas import ImprovementSuggestionModel, DesignPreferencesModel, AnalyzeImageResponse
+from .groq_service import groq_service
 
 class SpatialAnalysisEngine:
     @staticmethod
@@ -17,7 +18,17 @@ class SpatialAnalysisEngine:
         )
 
     @staticmethod
-    def generate_practical_recommendations(preferences: DesignPreferencesModel) -> List[ImprovementSuggestionModel]:
+    async def generate_practical_recommendations(preferences: DesignPreferencesModel) -> List[ImprovementSuggestionModel]:
+        # 1. Try generating with fast Groq AI intelligence
+        if groq_service.is_configured:
+            try:
+                groq_suggestions = await groq_service.generate_dynamic_recommendations(preferences)
+                if groq_suggestions and len(groq_suggestions) >= 3:
+                    return groq_suggestions
+            except Exception:
+                pass
+
+        # 2. Fallback to curated architectural guidelines
         return [
             ImprovementSuggestionModel(
                 id="sug-1",
