@@ -35,8 +35,10 @@
 7. **Production Python FastAPI Backend**:
    - Abstract image and product provider interfaces
    - Health checks, input validation, and asynchronous processing endpoints
-8. **Security & Data Privacy**:
-   - Production Cloud Firestore & Storage security rules
+8. **Security, Cloud Storage & AI Providers**:
+   - Supabase 100% Free Tier Storage & Authentication integration
+   - Groq LPU Ultra-Fast AI (Llama / OSS 120B) for dynamic architectural reports and real-time chat consultation
+   - Production Cloud Firestore & Supabase Storage security policies
    - Account and project deletion safeguards
 
 ---
