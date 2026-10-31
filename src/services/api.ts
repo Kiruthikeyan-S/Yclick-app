@@ -1,8 +1,39 @@
-import { DesignPreferences, DesignProject, DesignVariant, ImprovementSuggestion, ProductRecommendation, RoomAnalysisData } from '../types';
+import Constants from 'expo-constants';
+import { 
+  DesignPreferences, 
+  DesignProject, 
+  DesignVariant, 
+  ImprovementSuggestion, 
+  ProductRecommendation, 
+  RoomAnalysisData 
+} from '../types';
 
 export { RoomAnalysisData };
 
-export const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL || 'http://10.0.2.2:8000'; // 10.0.2.2 is Android emulator host loopback, or use local IP
+/**
+ * Determine dynamic API Base URL:
+ * On physical devices connected via Expo Go, dynamically extracts the development machine's
+ * local Wi-Fi IP from Metro hostUri so backend requests never fail with loopback timeouts.
+ */
+function resolveApiBaseUrl(): string {
+  // 1. If explicit environment variable is set
+  const envUrl = process.env.EXPO_PUBLIC_API_URL?.trim();
+  if (envUrl && !envUrl.includes('placeholder')) {
+    return envUrl;
+  }
+
+  // 2. Extract host from Expo Metro connection
+  const hostUri = Constants.expoConfig?.hostUri || (Constants as any).manifest2?.extra?.expoClient?.hostUri;
+  if (hostUri) {
+    const ip = hostUri.split(':')[0];
+    return `http://${ip}:8000`;
+  }
+
+  // 3. Fallback to active Wi-Fi subnet
+  return 'http://192.168.88.3:8000';
+}
+
+export const API_BASE_URL = resolveApiBaseUrl();
 
 export interface ApiResponse<T> {
   success: boolean;
@@ -21,6 +52,9 @@ export async function askDesignerChat(
   roomContext: string = '',
   idToken?: string
 ): Promise<{ success: boolean; reply: string; error?: string }> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 15000); // 15s timeout
+
   try {
     const res = await fetch(`${API_BASE_URL}/api/designs/chat`, {
       method: 'POST',
@@ -29,14 +63,26 @@ export async function askDesignerChat(
         ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
       },
       body: JSON.stringify({ messages, roomContext }),
+      signal: controller.signal,
     });
+    clearTimeout(timeoutId);
+
     if (res.ok) {
       const data = await res.json();
       return { success: true, reply: data.reply };
     }
-    return { success: false, reply: '', error: `HTTP ${res.status}` };
+    return { 
+      success: false, 
+      reply: '', 
+      error: `HTTP ${res.status}` 
+    };
   } catch (err: any) {
-    return { success: false, reply: '', error: err.message };
+    clearTimeout(timeoutId);
+    return { 
+      success: false, 
+      reply: '', 
+      error: err.name === 'AbortError' ? 'Chat request timed out' : err.message 
+    };
   }
 }
 
@@ -57,6 +103,9 @@ export async function checkBackendHealth(): Promise<{ status: string; isLive: bo
 }
 
 export async function analyzeImage(photoUri: string, idToken?: string): Promise<ApiResponse<RoomAnalysisData>> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 35000); // 35s for vision AI
+
   try {
     const formData = new FormData();
     const filename = photoUri.split('/').pop() || 'photo.jpg';
@@ -74,7 +123,9 @@ export async function analyzeImage(photoUri: string, idToken?: string): Promise<
         ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
       },
       body: formData,
+      signal: controller.signal,
     });
+    clearTimeout(timeoutId);
 
     if (!res.ok) {
       const err = await res.text();
@@ -84,6 +135,7 @@ export async function analyzeImage(photoUri: string, idToken?: string): Promise<
     const data: RoomAnalysisData = await res.json();
     return { success: true, data };
   } catch (err: any) {
+    clearTimeout(timeoutId);
     return { success: false, error: err.message };
   }
 }
@@ -93,6 +145,9 @@ export async function requestDesignGeneration(
   userId: string,
   idToken?: string
 ): Promise<ApiResponse<{ projectId: string; variants: DesignVariant[]; suggestions: ImprovementSuggestion[]; products: ProductRecommendation[]; isDemo?: boolean }>> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 60000); // 60s for image-to-image synthesis
+
   try {
     const res = await fetch(`${API_BASE_URL}/api/designs/generate`, {
       method: 'POST',
@@ -104,7 +159,9 @@ export async function requestDesignGeneration(
         userId,
         preferences,
       }),
+      signal: controller.signal,
     });
+    clearTimeout(timeoutId);
 
     if (!res.ok) {
       const errText = await res.text();
@@ -114,6 +171,7 @@ export async function requestDesignGeneration(
     const data = await res.json();
     return { success: true, data };
   } catch (err: any) {
+    clearTimeout(timeoutId);
     return { success: false, error: err.message };
   }
 }

@@ -193,18 +193,22 @@ export const DesignProjectProvider: React.FC<{ children: React.ReactNode }> = ({
     try {
       // 1. Upload captured photo to Supabase private storage if user is authenticated and Supabase is configured
       if (user?.uid && isSupabaseConfigured) {
-        const uploadRes = await uploadRoomPhotoToSupabase(
-          preferences.photoUri,
-          user.uid,
-          projectId
-        );
+        try {
+          const uploadRes = await uploadRoomPhotoToSupabase(
+            preferences.photoUri,
+            user.uid,
+            projectId
+          );
 
-        if (!uploadRes.success || !uploadRes.storagePath) {
-          throw new Error(uploadRes.error || 'Failed to securely upload room photo to storage.');
+          if (uploadRes.success && uploadRes.storagePath) {
+            storagePath = uploadRes.storagePath;
+            effectivePhotoUrl = uploadRes.signedUrl || preferences.photoUri;
+          } else {
+            console.warn('[DesignProject] Storage upload note:', uploadRes.error);
+          }
+        } catch (storageErr) {
+          console.warn('[DesignProject] Storage upload exception, continuing with local photo:', storageErr);
         }
-
-        storagePath = uploadRes.storagePath;
-        effectivePhotoUrl = uploadRes.signedUrl || preferences.photoUri;
       }
 
       // 2. Obtain Firebase ID token for protected backend endpoints

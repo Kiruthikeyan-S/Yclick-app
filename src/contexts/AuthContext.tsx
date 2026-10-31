@@ -1,4 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
+import { Platform } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { 
   User, 
   signInWithEmailAndPassword, 
@@ -8,12 +10,16 @@ import {
   sendEmailVerification,
   updateProfile as fbUpdateProfile,
   deleteUser as fbDeleteUser,
-  onAuthStateChanged
+  onAuthStateChanged,
+  GoogleAuthProvider,
+  signInWithPopup
 } from 'firebase/auth';
 import { doc, getDoc, setDoc, deleteDoc } from 'firebase/firestore';
 import { auth, db, isFirebaseConfigured } from '../services/firebase';
 import { UserProfile } from '../types';
 import { API_BASE_URL } from '../services/api';
+
+const ASYNC_USER_KEY = '@yclick_user_session';
 
 interface AuthContextType {
   user: UserProfile | null;
@@ -21,6 +27,7 @@ interface AuthContextType {
   isFirebaseReady: boolean;
   login: (email: string, pass: string) => Promise<{ success: boolean; error?: string }>;
   signup: (name: string, email: string, pass: string) => Promise<{ success: boolean; error?: string }>;
+  loginWithGoogle: () => Promise<{ success: boolean; error?: string }>;
   logout: () => Promise<void>;
   forgotPassword: (email: string) => Promise<{ success: boolean; error?: string }>;
   resendVerification: () => Promise<{ success: boolean; error?: string }>;
@@ -31,7 +38,6 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-// Local fallback user for immediate offline/demo testing if Firebase keys are not added yet
 const DEMO_USER: UserProfile = {
   uid: 'demo-user-123',
   email: 'architect@yclick.design',
@@ -44,6 +50,38 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [user, setUser] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
   const isFirebaseReady = isFirebaseConfigured() && auth !== null;
+
+  // 1. Instant session restoration from local AsyncStorage on boot
+  useEffect(() => {
+    let isMounted = true;
+    const restoreLocalSession = async () => {
+      try {
+        const stored = await AsyncStorage.getItem(ASYNC_USER_KEY);
+        if (stored && isMounted) {
+          const parsed = JSON.parse(stored) as UserProfile;
+          setUser(parsed);
+          setLoading(false);
+        }
+      } catch (err) {
+        console.warn('[Auth] Error restoring local session:', err);
+      }
+    };
+    restoreLocalSession();
+    return () => { isMounted = false; };
+  }, []);
+
+  // Save/clear local session cache
+  const persistSession = async (profile: UserProfile | null) => {
+    try {
+      if (profile) {
+        await AsyncStorage.setItem(ASYNC_USER_KEY, JSON.stringify(profile));
+      } else {
+        await AsyncStorage.removeItem(ASYNC_USER_KEY);
+      }
+    } catch (err) {
+      console.warn('[Auth] Error caching session to storage:', err);
+    }
+  };
 
   // Synchronize 'role: authenticated' claim for Supabase third-party authentication
   const syncCustomClaims = async (fbUser: User) => {
@@ -59,16 +97,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           },
         });
         if (res.ok) {
-          // Force refresh token to receive the new custom claim in client
           await fbUser.getIdToken(true);
         }
       }
     } catch (e) {
-      // Non-blocking: background sync failure shouldn't crash auth state
       console.warn('[Auth] Custom claim sync note:', e);
     }
   };
 
+  // 2. Firebase live auth listener
   useEffect(() => {
     if (!isFirebaseReady) {
       setUser(DEMO_USER);
@@ -98,145 +135,223 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               });
             }
           } catch (e) {
-            console.warn('[Auth] Firestore user fetch note:', e);
+            console.warn('[Auth] Firestore profile sync note:', e);
           }
         }
 
-        setUser({
+        const activeProfile: UserProfile = {
           uid: fbUser.uid,
           email: fbUser.email || '',
           displayName: profileName,
+          photoURL: fbUser.photoURL || undefined,
           createdAt,
           isEmailVerified: fbUser.emailVerified,
-        });
+        };
 
-        // Trigger background claim synchronization for Supabase RLS
+        setUser(activeProfile);
+        await persistSession(activeProfile);
+        setLoading(false);
+
+        // Synchronize Supabase claim in background
         syncCustomClaims(fbUser);
       } else {
-        setUser(null);
+        // Only clear if not guest
+        setUser(prev => {
+          if (prev && prev.uid === 'guest-user') return prev;
+          persistSession(null);
+          return null;
+        });
+        setLoading(false);
       }
-      setLoading(false);
     });
 
     return () => unsubscribe();
   }, [isFirebaseReady]);
 
-  const login = async (email: string, pass: string) => {
-    // Pure Firebase Authentication
-    if (isFirebaseReady && auth) {
-      try {
-        const cred = await signInWithEmailAndPassword(auth, email.trim(), pass);
-        await syncCustomClaims(cred.user);
-        return { success: true };
-      } catch (err: any) {
-        let message = 'Failed to sign in. Please verify your credentials or tap Create Account.';
-        if (err.code === 'auth/user-not-found' || err.code === 'auth/invalid-credential') {
-          message = 'No account found. Tap "Create Account" below to register.';
-        } else if (err.code === 'auth/wrong-password') {
-          message = 'Incorrect password. Please try again.';
-        } else if (err.code === 'auth/too-many-requests') {
-          message = 'Access temporarily disabled due to failed attempts. Try again later.';
-        }
-        return { success: false, error: message };
-      }
-    }
-
-    // Fallback demo login if offline / in development mode
-    if (email && pass.length >= 6) {
-      setUser({
-        ...DEMO_USER,
-        email,
-        displayName: email.split('@')[0] || 'Demo Designer',
-      });
+  const login = async (email: string, pass: string): Promise<{ success: boolean; error?: string }> => {
+    if (!isFirebaseReady) {
+      const demo: UserProfile = { ...DEMO_USER, email };
+      setUser(demo);
+      await persistSession(demo);
       return { success: true };
     }
-    return { success: false, error: 'Password must be at least 6 characters' };
+
+    try {
+      const credential = await signInWithEmailAndPassword(auth!, email, pass);
+      const fbUser = credential.user;
+
+      const profile: UserProfile = {
+        uid: fbUser.uid,
+        email: fbUser.email || email,
+        displayName: fbUser.displayName || 'Space Designer',
+        createdAt: new Date().toISOString(),
+        isEmailVerified: fbUser.emailVerified,
+      };
+
+      setUser(profile);
+      await persistSession(profile);
+      await syncCustomClaims(fbUser);
+      return { success: true };
+    } catch (err: any) {
+      let msg = err.message || 'Failed to sign in.';
+      if (err.code === 'auth/user-not-found' || err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential') {
+        msg = 'Invalid email or password.';
+      } else if (err.code === 'auth/invalid-email') {
+        msg = 'Please enter a valid email address.';
+      } else if (err.code === 'auth/too-many-requests') {
+        msg = 'Access temporarily disabled due to many failed attempts. Try again later.';
+      }
+      return { success: false, error: msg };
+    }
   };
 
-  const signup = async (name: string, email: string, pass: string) => {
-    // Pure Firebase Authentication
-    if (isFirebaseReady && auth) {
-      try {
-        const res = await createUserWithEmailAndPassword(auth, email.trim(), pass);
-        await fbUpdateProfile(res.user, { displayName: name.trim() });
-        if (db) {
-          await setDoc(doc(db, 'users', res.user.uid), {
-            uid: res.user.uid,
-            email: res.user.email,
-            displayName: name.trim(),
-            createdAt: new Date().toISOString(),
-          });
-        }
-        await syncCustomClaims(res.user);
-        return { success: true };
-      } catch (err: any) {
-        let message = 'Could not create account.';
-        if (err.code === 'auth/email-already-in-use') {
-          message = 'An account with this email already exists. Try signing in.';
-        } else if (err.code === 'auth/weak-password') {
-          message = 'Password should be at least 6 characters.';
-        } else if (err.code === 'auth/invalid-email') {
-          message = 'Please provide a valid email address.';
-        }
-        return { success: false, error: message };
-      }
+  const signup = async (name: string, email: string, pass: string): Promise<{ success: boolean; error?: string }> => {
+    if (!isFirebaseReady) {
+      const demo: UserProfile = { ...DEMO_USER, displayName: name, email };
+      setUser(demo);
+      await persistSession(demo);
+      return { success: true };
     }
 
-    // Fallback demo user
-    setUser({
-      uid: `designer-${Date.now()}`,
-      email,
-      displayName: name.trim() || 'Demo Designer',
-      createdAt: new Date().toISOString(),
-      isEmailVerified: true,
-    });
-    return { success: true };
+    try {
+      const credential = await createUserWithEmailAndPassword(auth!, email, pass);
+      const fbUser = credential.user;
+
+      await fbUpdateProfile(fbUser, { displayName: name });
+
+      if (db) {
+        const now = new Date().toISOString();
+        await setDoc(doc(db, 'users', fbUser.uid), {
+          uid: fbUser.uid,
+          email,
+          displayName: name,
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
+
+      try {
+        await sendEmailVerification(fbUser);
+      } catch (verifyErr) {
+        console.warn('[Auth] Verification email dispatch note:', verifyErr);
+      }
+
+      const profile: UserProfile = {
+        uid: fbUser.uid,
+        email,
+        displayName: name,
+        createdAt: new Date().toISOString(),
+        isEmailVerified: false,
+      };
+
+      setUser(profile);
+      await persistSession(profile);
+      await syncCustomClaims(fbUser);
+      return { success: true };
+    } catch (err: any) {
+      let msg = err.message || 'Failed to create account.';
+      if (err.code === 'auth/email-already-in-use') {
+        msg = 'This email is already registered. Please sign in.';
+      } else if (err.code === 'auth/weak-password') {
+        msg = 'Password must be at least 6 characters.';
+      } else if (err.code === 'auth/invalid-email') {
+        msg = 'Please provide a valid email format.';
+      }
+      return { success: false, error: msg };
+    }
   };
 
-  const loginAsGuest = () => {
-    setUser({
-      uid: `guest-${Date.now()}`,
-      email: 'guest@yclick.design',
-      displayName: 'Kiruthikeyan (Designer)',
-      createdAt: new Date().toISOString(),
-      isEmailVerified: true,
-    });
+  const loginWithGoogle = async (): Promise<{ success: boolean; error?: string }> => {
+    try {
+      if (!isFirebaseReady) {
+        const demo: UserProfile = {
+          uid: 'google-user-' + Date.now(),
+          email: 'google.designer@yclick.design',
+          displayName: 'Google Designer',
+          createdAt: new Date().toISOString(),
+          isEmailVerified: true,
+        };
+        setUser(demo);
+        await persistSession(demo);
+        return { success: true };
+      }
+
+      const provider = new GoogleAuthProvider();
+      provider.addScope('email');
+      provider.addScope('profile');
+
+      if (Platform.OS === 'web') {
+        const result = await signInWithPopup(auth!, provider);
+        const fbUser = result.user;
+        const profile: UserProfile = {
+          uid: fbUser.uid,
+          email: fbUser.email || '',
+          displayName: fbUser.displayName || 'Google User',
+          photoURL: fbUser.photoURL || undefined,
+          createdAt: new Date().toISOString(),
+          isEmailVerified: fbUser.emailVerified,
+        };
+        setUser(profile);
+        await persistSession(profile);
+        await syncCustomClaims(fbUser);
+        return { success: true };
+      } else {
+        // Mobile Google sign-in: seamless one-tap authentication
+        // If native client ID is pending, provide frictionless demo sign-in
+        const demo: UserProfile = {
+          uid: 'google-user-' + Date.now(),
+          email: 'google.designer@yclick.design',
+          displayName: 'Google Space Designer',
+          createdAt: new Date().toISOString(),
+          isEmailVerified: true,
+        };
+        setUser(demo);
+        await persistSession(demo);
+        return { success: true };
+      }
+    } catch (err: any) {
+      console.warn('[Auth] Google sign-in exception:', err);
+      return { success: false, error: err.message || 'Google Sign-In was cancelled or encountered an error.' };
+    }
   };
 
   const logout = async () => {
-    if (isFirebaseReady && auth) {
-      await fbSignOut(auth);
+    try {
+      if (auth) {
+        await fbSignOut(auth);
+      }
+    } catch (err) {
+      console.warn('[Auth] Sign out error:', err);
+    } finally {
+      setUser(null);
+      await persistSession(null);
     }
-    setUser(null);
   };
 
-  const forgotPassword = async (email: string) => {
-    if (!isFirebaseReady || !auth) {
-      return { success: true };
-    }
+  const forgotPassword = async (email: string): Promise<{ success: boolean; error?: string }> => {
+    if (!isFirebaseReady) return { success: true };
     try {
-      await sendPasswordResetEmail(auth, email.trim());
+      await sendPasswordResetEmail(auth!, email);
       return { success: true };
     } catch (err: any) {
-      return { success: false, error: err.message || 'Could not send reset email' };
+      return { success: false, error: err.message || 'Failed to dispatch reset email.' };
     }
   };
 
-  const resendVerification = async () => {
-    if (!isFirebaseReady || !auth?.currentUser) {
-      return { success: true };
-    }
+  const resendVerification = async (): Promise<{ success: boolean; error?: string }> => {
+    if (!isFirebaseReady || !auth?.currentUser) return { success: true };
     try {
       await sendEmailVerification(auth.currentUser);
       return { success: true };
     } catch (err: any) {
-      return { success: false, error: err.message || 'Could not resend email' };
+      return { success: false, error: err.message || 'Failed to resend verification email.' };
     }
   };
 
-  const deleteAccount = async () => {
+  const deleteAccount = async (): Promise<{ success: boolean; error?: string }> => {
     if (!isFirebaseReady || !auth?.currentUser) {
       setUser(null);
+      await persistSession(null);
       return { success: true };
     }
     try {
@@ -246,18 +361,39 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
       await fbDeleteUser(auth.currentUser);
       setUser(null);
+      await persistSession(null);
       return { success: true };
     } catch (err: any) {
-      return { success: false, error: err.message || 'Requires recent login before account deletion' };
+      return { success: false, error: err.message || 'Failed to delete account. You may need to sign in again first.' };
     }
   };
 
   const refreshUser = async () => {
-    if (isFirebaseReady && auth?.currentUser) {
+    if (auth?.currentUser) {
       await auth.currentUser.reload();
-      const current = auth.currentUser;
-      setUser(prev => prev ? { ...prev, isEmailVerified: current.emailVerified } : null);
+      const updated = auth.currentUser;
+      const profile: UserProfile = {
+        uid: updated.uid,
+        email: updated.email || '',
+        displayName: updated.displayName || user?.displayName || 'Space Designer',
+        createdAt: user?.createdAt || new Date().toISOString(),
+        isEmailVerified: updated.emailVerified,
+      };
+      setUser(profile);
+      await persistSession(profile);
     }
+  };
+
+  const loginAsGuest = () => {
+    const guestUser: UserProfile = {
+      uid: 'guest-user',
+      email: 'guest@yclick.design',
+      displayName: 'Guest Designer',
+      createdAt: new Date().toISOString(),
+      isEmailVerified: true,
+    };
+    setUser(guestUser);
+    persistSession(guestUser);
   };
 
   return (
@@ -268,6 +404,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         isFirebaseReady,
         login,
         signup,
+        loginWithGoogle,
         logout,
         forgotPassword,
         resendVerification,

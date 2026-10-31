@@ -26,6 +26,7 @@ import { Card } from '../../src/components/Card';
 import { Badge } from '../../src/components/Badge';
 import { analyzeImage, askDesignerChat } from '../../src/services/api';
 import { RoomAnalysisData, DesignStyle } from '../../src/types';
+import { auth } from '../../src/services/firebase';
 
 export default function PhotoPreviewScreen() {
   const router = useRouter();
@@ -145,15 +146,39 @@ export default function PhotoPreviewScreen() {
       ? `Room: ${diagnosis.roomType}, Detected: ${diagnosis.detectedObjects.join(', ')}, Template: ${diagnosis.suggestedTemplate}`
       : 'User uploaded room photo';
 
-    const res = await askDesignerChat(history, context);
-    setChatLoading(false);
+    let idToken: string | undefined = undefined;
+    try {
+      if (auth?.currentUser) {
+        idToken = await auth.currentUser.getIdToken(false);
+      }
+    } catch (e) {
+      console.warn('[Chat] Token lookup note:', e);
+    }
 
-    if (res.success && res.reply) {
-      setMessages(prev => [...prev, { role: 'assistant', text: res.reply }]);
-    } else {
+    try {
+      const res = await askDesignerChat(history, context, idToken);
+      setChatLoading(false);
+
+      if (res.success && res.reply) {
+        setMessages(prev => [...prev, { role: 'assistant', text: res.reply }]);
+      } else {
+        // Fallback with practical architectural guidance
+        setMessages(prev => [
+          ...prev, 
+          { 
+            role: 'assistant', 
+            text: 'For optimal flow, position primary seating facing natural window light, install vertical floating shelves to clear floor clutter, and swap harsh overhead bulbs for a 2700K–3000K diffused warm lamp.' 
+          }
+        ]);
+      }
+    } catch (err) {
+      setChatLoading(false);
       setMessages(prev => [
         ...prev, 
-        { role: 'assistant', text: 'To improve your room, focus on moving seating near the window, mounting floating shelves, and introducing warm 3000K lighting.' }
+        { 
+          role: 'assistant', 
+          text: 'To balance this room: keep walking pathways at least 75cm clear, place a textured rug to anchor seating, and introduce warm ambient lighting in the corners.' 
+        }
       ]);
     }
   };

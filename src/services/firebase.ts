@@ -11,7 +11,10 @@ import {
   sendPasswordResetEmail as fbSendReset,
   sendEmailVerification as fbSendVerify,
   updateProfile as fbUpdateProfile,
-  deleteUser as fbDeleteUser
+  deleteUser as fbDeleteUser,
+  GoogleAuthProvider,
+  signInWithPopup,
+  signInWithCredential
 } from 'firebase/auth';
 import { 
   getFirestore, 
@@ -34,6 +37,7 @@ import {
   getDownloadURL, 
   deleteObject 
 } from 'firebase/storage';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { UserProfile, DesignProject } from '../types';
 
 // YClick Firebase Production Configuration
@@ -62,7 +66,14 @@ let storage: FirebaseStorage | null = null;
 if (isFirebaseConfigured()) {
   try {
     app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
-    auth = getAuth(app);
+    
+    // Initialize Auth with standard getAuth fallback
+    try {
+      auth = getAuth(app);
+    } catch {
+      auth = initializeAuth(app);
+    }
+    
     db = getFirestore(app);
     storage = getStorage(app);
   } catch (err) {
@@ -70,4 +81,12 @@ if (isFirebaseConfigured()) {
   }
 }
 
-export { app, auth, db, storage };
+export { 
+  app, 
+  auth, 
+  db, 
+  storage, 
+  GoogleAuthProvider, 
+  signInWithPopup, 
+  signInWithCredential 
+};

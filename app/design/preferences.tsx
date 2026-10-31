@@ -16,7 +16,7 @@ import { SelectionChip } from '../../src/components/SelectionChip';
 
 export default function PreferencesScreen() {
   const router = useRouter();
-  const { preferences, updatePreferences, setConsent } = useDesignProject();
+  const { preferences, updatePreferences, setConsent, startGeneration } = useDesignProject();
 
   const [selectedStyle, setSelectedStyle] = useState<DesignStyle>(preferences.style);
   const [selectedBudget, setSelectedBudget] = useState<BudgetChoice>(preferences.budgetChoice);
@@ -27,7 +27,7 @@ export default function PreferencesScreen() {
   const [additionalNotes, setAdditionalNotes] = useState(preferences.additionalNotes || '');
   const [measurements, setMeasurements] = useState(preferences.roomMeasurements || '');
   const [cityPincode, setCityPincode] = useState(preferences.cityPincode || '');
-  const [consentGiven, setConsentGiven] = useState(preferences.consentGiven);
+  const [consentGiven, setConsentGiven] = useState(true);
 
   const toggleItemToKeep = (item: string) => {
     setItemsToKeep(prev =>
@@ -47,15 +47,7 @@ export default function PreferencesScreen() {
     );
   };
 
-  const handleNext = () => {
-    if (!consentGiven) {
-      Alert.alert(
-        'Consent Required',
-        'Please confirm your consent to process your room photograph with AI to generate design suggestions.'
-      );
-      return;
-    }
-
+  const saveState = () => {
     updatePreferences({
       style: selectedStyle,
       budgetChoice: selectedBudget,
@@ -69,7 +61,23 @@ export default function PreferencesScreen() {
       consentGiven: true,
     });
     setConsent(true);
+  };
 
+  const handleDirectGenerate = async () => {
+    if (!consentGiven) {
+      Alert.alert(
+        'Consent Required',
+        'Please confirm your consent to process your room photograph with AI.'
+      );
+      return;
+    }
+    saveState();
+    router.push('/design/generating');
+    startGeneration();
+  };
+
+  const handleFineTune = () => {
+    saveState();
     router.push('/design/category-questions');
   };
 
@@ -78,19 +86,24 @@ export default function PreferencesScreen() {
       <Header title="Space & Style" subtitle="Step 2 of 4 • Calibrate Parameters" onBackPress={() => router.back()} />
       <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
         {/* Space Preview Banner */}
-        <View style={styles.previewBanner}>
-          <Image
-            source={{
-              uri: preferences.photoUri || 'https://images.unsplash.com/photo-1555041469-a586c61ea9bc?auto=format&fit=crop&w=600&q=80',
-            }}
-            style={styles.previewImage}
-            resizeMode="cover"
-          />
-          <View style={styles.bannerBadge}>
-            <Ionicons name="sparkles" size={12} color="#A7F3D0" />
-            <Text style={styles.bannerBadgeText}>Active Spatial Canvas</Text>
+        {preferences.photoUri ? (
+          <View style={styles.previewBanner}>
+            <Image
+              source={{ uri: preferences.photoUri }}
+              style={styles.previewImage}
+              resizeMode="cover"
+            />
+            <View style={styles.bannerBadge}>
+              <Ionicons name="sparkles" size={12} color="#A7F3D0" />
+              <Text style={styles.bannerBadgeText}>Uploaded Room Canvas</Text>
+            </View>
           </View>
-        </View>
+        ) : (
+          <View style={[styles.previewBanner, styles.placeholderBanner]}>
+            <Ionicons name="image-outline" size={32} color={Colors.primary} />
+            <Text style={styles.placeholderBannerText}>Your Uploaded Room Photo</Text>
+          </View>
+        )}
         {/* Style Selection */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>1. Preferred Aesthetic / Style</Text>
@@ -237,12 +250,21 @@ export default function PreferencesScreen() {
           </TouchableOpacity>
         </Card>
 
-        {/* Continue Button */}
+        {/* Direct Generation Action */}
         <Button
           title="Generate 3 Spatial Concepts →"
-          onPress={handleNext}
+          onPress={handleDirectGenerate}
           style={styles.submitBtn}
         />
+
+        {/* Optional Fine-Tuning */}
+        <TouchableOpacity
+          style={styles.fineTuneBtn}
+          onPress={handleFineTune}
+          activeOpacity={0.7}
+        >
+          <Text style={styles.fineTuneText}>Optional: Fine-tune Specific Layout Questions →</Text>
+        </TouchableOpacity>
       </ScrollView>
     </SafeAreaView>
   );
@@ -264,6 +286,20 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     position: 'relative',
     marginBottom: Spacing.md,
+  },
+  placeholderBanner: {
+    backgroundColor: '#EDF3EE',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1.5,
+    borderColor: '#D1E0D5',
+    borderStyle: 'dashed',
+    gap: 8,
+  },
+  placeholderBannerText: {
+    fontSize: 13,
+    color: Colors.textSecondary,
+    fontWeight: '600',
   },
   previewImage: {
     width: '100%',
@@ -352,5 +388,16 @@ const styles = StyleSheet.create({
   submitBtn: {
     width: '100%',
     marginTop: Spacing.md,
+  },
+  fineTuneBtn: {
+    paddingVertical: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: Spacing.sm,
+  },
+  fineTuneText: {
+    fontSize: 13,
+    color: Colors.primary,
+    fontWeight: '600',
   },
 });

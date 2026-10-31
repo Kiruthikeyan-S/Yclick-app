@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
 import { useRouter } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAuth } from '../../src/contexts/AuthContext';
 import { Colors } from '../../src/theme/colors';
@@ -11,11 +12,12 @@ import { Header } from '../../src/components/Header';
 
 export default function LoginScreen() {
   const router = useRouter();
-  const { login, loginAsGuest } = useAuth();
+  const { login, loginWithGoogle, loginAsGuest } = useAuth();
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  const [googleLoading, setGoogleLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const handleLogin = async () => {
@@ -36,6 +38,19 @@ export default function LoginScreen() {
     }
   };
 
+  const handleGoogleLogin = async () => {
+    setError(null);
+    setGoogleLoading(true);
+    const res = await loginWithGoogle();
+    setGoogleLoading(false);
+
+    if (res.success) {
+      router.replace('/(tabs)');
+    } else {
+      setError(res.error || 'Google Sign-In failed.');
+    }
+  };
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <Header title="Sign In" onBackPress={() => router.back()} />
@@ -49,6 +64,25 @@ export default function LoginScreen() {
               <Text style={styles.errorText}>{error}</Text>
             </View>
           ) : null}
+
+          {/* Google Sign In Option */}
+          <TouchableOpacity
+            style={styles.googleBtn}
+            activeOpacity={0.8}
+            onPress={handleGoogleLogin}
+            disabled={googleLoading}
+          >
+            <Ionicons name="logo-google" size={20} color="#EA4335" />
+            <Text style={styles.googleBtnText}>
+              {googleLoading ? 'Connecting Google...' : 'Continue with Google'}
+            </Text>
+          </TouchableOpacity>
+
+          <View style={styles.dividerRow}>
+            <View style={styles.dividerLine} />
+            <Text style={styles.dividerText}>or continue with email</Text>
+            <View style={styles.dividerLine} />
+          </View>
 
           <Input
             label="Email Address"
@@ -111,73 +145,108 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     flexGrow: 1,
-    padding: Spacing.screenPadding,
   },
   content: {
-    flex: 1,
-    justifyContent: 'center',
-    paddingVertical: Spacing.lg,
+    padding: Spacing.xl,
   },
   heading: {
-    fontSize: 26,
-    fontWeight: '800',
+    fontSize: 28,
+    fontWeight: '700',
     color: Colors.textPrimary,
-    marginBottom: 4,
+    marginBottom: Spacing.xs,
   },
   subtitle: {
-    fontSize: 14,
+    fontSize: 15,
     color: Colors.textSecondary,
     marginBottom: Spacing.xl,
   },
   errorBox: {
-    backgroundColor: Colors.errorBackground,
+    backgroundColor: '#FEE2E2',
     padding: Spacing.md,
-    borderRadius: Spacing.borderRadiusMd,
-    marginBottom: Spacing.md,
+    borderRadius: 8,
+    marginBottom: Spacing.lg,
     borderWidth: 1,
-    borderColor: Colors.error,
+    borderColor: '#FCA5A5',
   },
   errorText: {
-    color: Colors.error,
+    color: '#991B1B',
+    fontSize: 14,
+  },
+  googleBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.sm,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1.5,
+    borderColor: '#E2E8F0',
+    borderRadius: 12,
+    paddingVertical: 14,
+    marginBottom: Spacing.lg,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 1,
+  },
+  googleBtnText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#1E293B',
+  },
+  dividerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: Spacing.lg,
+  },
+  dividerLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: '#E2E8F0',
+  },
+  dividerText: {
+    marginHorizontal: Spacing.sm,
     fontSize: 13,
+    color: Colors.textSecondary,
     fontWeight: '500',
   },
   forgotBtn: {
     alignSelf: 'flex-end',
-    marginBottom: Spacing.lg,
+    marginBottom: Spacing.xl,
   },
   forgotText: {
-    fontSize: 13,
     color: Colors.primary,
-    fontWeight: '600',
+    fontSize: 14,
+    fontWeight: '500',
   },
   submitBtn: {
-    width: '100%',
     marginBottom: Spacing.md,
   },
   guestBtn: {
-    paddingVertical: 12,
     alignItems: 'center',
-    marginBottom: Spacing.lg,
+    justifyContent: 'center',
+    paddingVertical: 12,
+    marginBottom: Spacing.xl,
+    borderRadius: 8,
+    backgroundColor: 'rgba(36, 76, 62, 0.06)',
   },
   guestBtnText: {
+    color: Colors.primary,
     fontSize: 14,
-    color: Colors.textSecondary,
     fontWeight: '600',
-    textDecorationLine: 'underline',
   },
   footerRow: {
     flexDirection: 'row',
     justifyContent: 'center',
-    alignItems: 'center',
+    marginTop: Spacing.md,
   },
   footerText: {
-    fontSize: 14,
     color: Colors.textSecondary,
+    fontSize: 14,
   },
   footerLink: {
-    fontSize: 14,
     color: Colors.primary,
-    fontWeight: '700',
+    fontWeight: '600',
+    fontSize: 14,
   },
 });
