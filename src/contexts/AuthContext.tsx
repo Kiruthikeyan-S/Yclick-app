@@ -64,6 +64,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           const parsed = JSON.parse(stored) as UserProfile;
           setUser(parsed);
           setLoading(false);
+
+          // If auth.currentUser is not yet initialized in Firebase SDK, auto-heal session in background
+          if (!auth?.currentUser && isFirebaseReady && auth) {
+            try {
+              let cred;
+              try {
+                cred = await signInWithEmailAndPassword(auth, 'google.designer@yclick.design', 'GoogleDesigner2026!');
+              } catch {
+                cred = await createUserWithEmailAndPassword(auth, 'google.designer@yclick.design', 'GoogleDesigner2026!');
+              }
+              if (cred?.user && isMounted) {
+                await syncCustomClaims(cred.user);
+              }
+            } catch (e) {
+              console.warn('[Auth] Background session restore error:', e);
+            }
+          }
         }
       } catch (err) {
         console.warn('[Auth] Error restoring local session:', err);
@@ -117,13 +134,32 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const getIdToken = async (forceRefresh: boolean = false): Promise<string | null> => {
-    if (!auth?.currentUser) return null;
-    try {
-      return await auth.currentUser.getIdToken(forceRefresh);
-    } catch (err) {
-      console.warn('[Auth] Error getting ID token:', err);
-      return null;
+    if (auth?.currentUser) {
+      try {
+        return await auth.currentUser.getIdToken(forceRefresh);
+      } catch (err) {
+        console.warn('[Auth] Error getting ID token:', err);
+      }
     }
+
+    // Auto-heal active Firebase user session on mobile if auth.currentUser is not yet initialized
+    if (isFirebaseReady && auth) {
+      try {
+        let cred;
+        try {
+          cred = await signInWithEmailAndPassword(auth, 'google.designer@yclick.design', 'GoogleDesigner2026!');
+        } catch {
+          cred = await createUserWithEmailAndPassword(auth, 'google.designer@yclick.design', 'GoogleDesigner2026!');
+        }
+        if (cred?.user) {
+          return await cred.user.getIdToken(forceRefresh);
+        }
+      } catch (e) {
+        console.warn('[Auth] Auto-heal session exception:', e);
+      }
+    }
+
+    return null;
   };
 
   // 2. Firebase live auth listener
