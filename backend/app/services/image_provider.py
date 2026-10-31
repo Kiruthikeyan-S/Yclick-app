@@ -5,17 +5,19 @@ import base64
 import logging
 import asyncio
 import httpx
-from PIL import Image
+from PIL import Image, ImageDraw, ImageOps
 from dotenv import load_dotenv
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional
-from fastapi import HTTPException
+from fastapi import HTTPException, status
 from ..models.schemas import DesignVariantModel, DesignPreferencesModel
 
 load_dotenv()
 logger = logging.getLogger(__name__)
 
 class BaseImageProvider(ABC):
+    is_demo: bool = False
+
     @abstractmethod
     async def generate_variants(
         self, 
@@ -27,11 +29,13 @@ class BaseImageProvider(ABC):
         pass
 
 class MockImageProvider(BaseImageProvider):
+    is_demo: bool = True
+
     async def generate_variants(
         self, 
         preferences: DesignPreferencesModel, 
         original_image_bytes: Optional[bytes] = None,
-        demo_mode: bool = False
+        demo_mode: bool = True
     ) -> List[DesignVariantModel]:
         return [
             DesignVariantModel(
@@ -90,9 +94,12 @@ class MockImageProvider(BaseImageProvider):
 class CloudflareInpaintingImageToImageProvider(BaseImageProvider):
     """
     Cloudflare Workers AI Image-to-Image provider using runwayml/stable-diffusion-v1-5-inpainting.
-    Takes the user's actual room image, preserves the room geometry and boundary structure,
-    and transforms the surfaces and styling according to the selected interior design tier.
+    Preserves original photograph proportions without squishing/stretching,
+    generates contextual inpainting masks that protect preserved items (doors, windows, flooring),
+    and transforms room aesthetics into 3 distinct spatial tiers.
     """
+    is_demo: bool = False
+
     def __init__(self, account_id: str, api_token: str):
         self.account_id = account_id
         self.api_token = api_token
@@ -106,18 +113,50 @@ class CloudflareInpaintingImageToImageProvider(BaseImageProvider):
         image_bytes: bytes, 
         prompt: str, 
         strength: float = 0.65,
-        tier_id: str = "variant"
+        tier_id: str = "variant",
+        items_to_keep: List[str] = None
     ) -> Optional[str]:
-        # Process and normalize the uploaded room image
+        # 1. Open and preserve original aspect ratio
         im = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-        im = im.resize((512, 512), Image.Resampling.LANCZOS)
+        orig_w, orig_h = im.size
+
+        # Fit within 512x512 maintaining aspect ratio (Problem 6 Fix)
+        thumb = im.copy()
+        thumb.thumbnail((512, 512), Image.Resampling.LANCZOS)
+        thumb_w, thumb_h = thumb.size
+
+        # Pad into standard 512x512 canvas for the inpainting model
+        padded_im = Image.new("RGB", (512, 512), (0, 0, 0))
+        offset_x = (512 - thumb_w) // 2
+        offset_y = (512 - thumb_h) // 2
+        padded_im.paste(thumb, (offset_x, offset_y))
+
         buf = io.BytesIO()
-        im.save(buf, format="JPEG", quality=85)
+        padded_im.save(buf, format="JPEG", quality=85)
         raw_image_ints = list(buf.getvalue())
 
-        # Construct soft inpainting mask: preserves structural window & wall positions
-        # while allowing interior surface and furniture redesign
-        mask_im = Image.new("L", (512, 512), int(strength * 255))
+        # 2. Contextual Inpainting Mask (Problem 6 Fix)
+        # Background padding is 0 (unmodified)
+        mask_im = Image.new("L", (512, 512), 0)
+        draw = ImageDraw.Draw(mask_im)
+
+        # Base editable strength across active room area
+        base_val = int(strength * 255)
+        draw.rectangle([offset_x, offset_y, offset_x + thumb_w, offset_y + thumb_h], fill=base_val)
+
+        # Preserve structural items based on user preferences
+        items_lower = [it.lower() for it in (items_to_keep or [])]
+
+        # Preserve windows & doors (keep perimeter frame boundaries at 0 mask)
+        if any("window" in it or "door" in it for it in items_lower):
+            # Upper-left and upper-right window perimeter zones
+            draw.rectangle([offset_x, offset_y, offset_x + int(thumb_w * 0.15), offset_y + int(thumb_h * 0.70)], fill=0)
+            draw.rectangle([offset_x + int(thumb_w * 0.85), offset_y, offset_x + thumb_w, offset_y + int(thumb_h * 0.70)], fill=0)
+
+        # Preserve existing flooring
+        if any("floor" in it for it in items_lower):
+            draw.rectangle([offset_x, offset_y + int(thumb_h * 0.78), offset_x + thumb_w, offset_y + thumb_h], fill=0)
+
         mask_buf = io.BytesIO()
         mask_im.save(mask_buf, format="PNG")
         mask_ints = list(mask_buf.getvalue())
@@ -128,7 +167,7 @@ class CloudflareInpaintingImageToImageProvider(BaseImageProvider):
         }
         payload = {
             "prompt": prompt,
-            "negative_prompt": "blurry, distorted walls, deformed structure, bad architecture, chaotic, low quality",
+            "negative_prompt": "blurry, distorted walls, chaotic, deformed geometry, unrealistic architecture, low resolution",
             "image": raw_image_ints,
             "mask": mask_ints,
             "guidance": 7.5,
@@ -139,20 +178,29 @@ class CloudflareInpaintingImageToImageProvider(BaseImageProvider):
             async with httpx.AsyncClient(timeout=45.0) as client:
                 res = await client.post(self.url, headers=headers, json=payload)
                 if res.status_code == 200:
-                    content_type = res.headers.get("content-type", "")
                     raw_bytes = res.content
-                    if "image" in content_type or len(raw_bytes) > 1000:
-                        b64 = base64.b64encode(raw_bytes).decode("utf-8")
-                        # Save copy on disk
-                        filename = f"{tier_id}_{int(time.time())}.png"
+                    if len(raw_bytes) > 1000:
+                        gen_img = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
+                        # Crop out the letterbox padding to preserve user's exact original aspect ratio
+                        cropped_gen = gen_img.crop((offset_x, offset_y, offset_x + thumb_w, offset_y + thumb_h))
+                        final_im = cropped_gen.resize((orig_w, orig_h), Image.Resampling.LANCZOS)
+                        
+                        out_buf = io.BytesIO()
+                        final_im.save(out_buf, format="JPEG", quality=85)
+                        final_bytes = out_buf.getvalue()
+
+                        # Save disk cache
+                        filename = f"{tier_id}_{int(time.time())}.jpg"
                         filepath = os.path.join(self.static_dir, filename)
                         with open(filepath, "wb") as f:
-                            f.write(raw_bytes)
-                        return f"data:image/png;base64,{b64}"
+                            f.write(final_bytes)
+
+                        b64 = base64.b64encode(final_bytes).decode("utf-8")
+                        return f"data:image/jpeg;base64,{b64}"
                 else:
-                    logger.error(f"Cloudflare inpainting returned {res.status_code}: {res.text}")
+                    logger.error(f"Cloudflare inpainting failed ({res.status_code}): {res.text}")
         except Exception as e:
-            logger.error(f"Cloudflare img2img exception: {e}")
+            logger.error(f"Cloudflare inpainting exception: {e}")
         return None
 
     async def generate_variants(
@@ -165,7 +213,7 @@ class CloudflareInpaintingImageToImageProvider(BaseImageProvider):
         style_name = preferences.style
         kept = ", ".join(preferences.itemsToKeep) if preferences.itemsToKeep else "main wall positions and windows"
 
-        # If no image bytes supplied, fetch from photoUri if it is an HTTP/S URL
+        # If no raw bytes passed, download from photoUri
         if not original_image_bytes and preferences.photoUri.startswith("http"):
             try:
                 async with httpx.AsyncClient(timeout=15.0) as client:
@@ -173,48 +221,58 @@ class CloudflareInpaintingImageToImageProvider(BaseImageProvider):
                     if img_res.status_code == 200:
                         original_image_bytes = img_res.content
             except Exception as e:
-                logger.warning(f"Could not download photoUri for img2img: {e}")
+                logger.warning(f"Could not retrieve photoUri for img2img: {e}")
 
-        # If we cannot obtain the original room image bytes, fail with clear error unless demo mode is on
+        # If image bytes unavailable:
         if not original_image_bytes:
             if demo_mode:
                 mock_provider = MockImageProvider()
                 return await mock_provider.generate_variants(preferences, demo_mode=True)
             raise HTTPException(
-                status_code=400,
+                status_code=status.HTTP_400_BAD_REQUEST,
                 detail="A valid uploaded room photograph is required to perform image-to-image spatial transformation."
             )
 
         prompts = [
             (
                 "var-budget",
-                f"Budget interior redesign of this existing {room_name}, keeping {kept}, adding warm 3000K diffused uplighting, fresh natural textiles, tidy decluttered floor, photorealistic interior architecture",
+                f"Interior photography of this exact {room_name}, maintaining room perspective and {kept}, budget styling with warm 3000K diffused uplighting, fresh organic textiles, decluttered clean floor",
                 0.55,
             ),
             (
                 "var-balanced",
-                f"Balanced modern {style_name} makeover of this {room_name}, stylish warm sage accent wall, modular floating oak shelves, comfortable new armchair, soft atmospheric lighting, architectural interior photography",
+                f"Interior architectural redesign of this exact {room_name}, maintaining perspective, stylish {style_name} makeover, refined accent focal wall, modular floating oak shelves, warm layered lighting",
                 0.68,
             ),
             (
                 "var-premium",
-                f"Luxury architectural transformation of this {room_name}, premium fluted oak acoustic wall panels, bespoke designer furniture, concealed warm architectural LED channels, high-end hotel finish",
+                f"Luxury architectural transformation of this exact {room_name}, maintaining perspective, bespoke {style_name} design, fluted acoustic timber wall cladding, recessed warm architectural LED channels, high-end bespoke finish",
                 0.80,
             ),
         ]
 
         # Concurrently transform the room image into the 3 tiers
         tasks = [
-            self._transform_room_image(original_image_bytes, p, strength, tier_id)
+            self._transform_room_image(original_image_bytes, p, strength, tier_id, preferences.itemsToKeep)
             for tier_id, p, strength in prompts
         ]
         results = await asyncio.gather(*tasks)
 
-        # Baseline variants
+        # Problem 3 Fix: If real AI inpainting fails and not in demo mode, fail honestly
+        successful_gens = [r for r in results if r is not None]
+        if len(successful_gens) == 0:
+            if demo_mode:
+                mock_provider = MockImageProvider()
+                return await mock_provider.generate_variants(preferences, demo_mode=True)
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="AI image-to-image provider could not synthesize room variants from the uploaded photo."
+            )
+
+        # Build variants with generated image outputs
         mock_provider = MockImageProvider()
         variants = await mock_provider.generate_variants(preferences, demo_mode=False)
 
-        # Apply transformed images and remove demo labels
         for i, gen_uri in enumerate(results):
             if gen_uri:
                 variants[i].imageUrl = gen_uri
@@ -229,10 +287,12 @@ def get_image_provider(demo_mode: bool = False) -> BaseImageProvider:
     if cf_account and cf_token and cf_token.startswith("cfut_"):
         return CloudflareInpaintingImageToImageProvider(account_id=cf_account, api_token=cf_token)
 
-    if demo_mode or os.getenv("ALLOW_DEMO_MODE", "true").lower() == "true":
+    # Problem 3 Fix: ALLOW_DEMO_MODE defaults to false
+    is_demo_allowed = demo_mode or os.getenv("ALLOW_DEMO_MODE", "false").lower() in ("true", "1")
+    if is_demo_allowed:
         return MockImageProvider()
 
     raise HTTPException(
-        status_code=503,
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         detail="No image-to-image provider is configured. Please supply CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN with Workers AI permissions."
     )

@@ -4,6 +4,7 @@ import logging
 import httpx
 from dotenv import load_dotenv
 from typing import List, Dict, Any, Optional
+from fastapi import HTTPException, status
 from ..models.schemas import ImprovementSuggestionModel, DesignPreferencesModel
 
 load_dotenv()
@@ -24,9 +25,12 @@ class GroqService:
         return bool(self.api_key and self.api_key.startswith("gsk_"))
 
     async def chat(self, messages: List[Dict[str, str]], max_tokens: int = 500) -> str:
-        """General interior design chat using Groq."""
+        """General interior design chat using Groq. Raises HTTPException on failure (Problem 12)."""
         if not self.is_configured:
-            return "Groq API key is not configured. Please set GROQ_API_KEY."
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Groq API service is not configured. Please supply GROQ_API_KEY in backend environment.",
+            )
 
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -46,13 +50,27 @@ class GroqService:
                 res = await client.post(GROQ_API_URL, headers=headers, json=payload)
                 if res.status_code == 200:
                     data = res.json()
-                    return data["choices"][0]["message"]["content"]
+                    choices = data.get("choices", [])
+                    if choices and "message" in choices[0]:
+                        return choices[0]["message"]["content"]
+                    raise HTTPException(
+                        status_code=status.HTTP_502_BAD_GATEWAY,
+                        detail="Groq API returned an empty or malformed completion.",
+                    )
                 else:
                     logger.error(f"Groq chat error {res.status_code}: {res.text}")
-                    return f"Error from Groq ({res.status_code}): {res.text}"
+                    raise HTTPException(
+                        status_code=status.HTTP_502_BAD_GATEWAY,
+                        detail=f"Groq API provider error ({res.status_code}): {res.text}",
+                    )
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Groq exception: {e}")
-            return f"Error contacting Groq: {str(e)}"
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Failed to communicate with Groq AI provider: {str(e)}",
+            )
 
     async def generate_dynamic_recommendations(
         self, preferences: DesignPreferencesModel

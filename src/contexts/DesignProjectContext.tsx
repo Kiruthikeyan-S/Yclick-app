@@ -1,37 +1,23 @@
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { 
-  DesignPreferences, 
   DesignProject, 
+  DesignPreferences, 
+  GenerationStatus, 
+  SpaceCategoryId, 
   DesignVariant, 
   ImprovementSuggestion, 
-  ProductRecommendation, 
-  SpaceCategoryId, 
+  ProductRecommendation,
   ThreeDSceneSettings,
-  GenerationStatus 
 } from '../types';
-import { useAuth } from './AuthContext';
-import { auth } from '../services/firebase';
-import { DEMO_VARIANTS, DEMO_SUGGESTIONS, DEMO_PRODUCTS, DEFAULT_SCENE_SETTINGS } from '../services/demoData';
-import { requestDesignGeneration } from '../services/api';
 import { 
   supabase, 
   isSupabaseConfigured, 
   uploadRoomPhotoToSupabase, 
   getSignedRoomPhotoUrl 
 } from '../services/supabase';
-
-const DEFAULT_PREFERENCES: DesignPreferences = {
-  categoryId: 'home-rooms',
-  subcategoryId: 'living-room',
-  photoUri: '',
-  consentGiven: false,
-  budgetChoice: 'Not sure yet',
-  style: 'Let AI suggest a style',
-  itemsToKeep: ['Flooring', 'Doors and windows'],
-  improvementGoals: ['Better lighting', 'Better furniture arrangement'],
-  constraints: [],
-  categoryAnswers: {},
-};
+import { requestDesignGeneration } from '../services/api';
+import { useAuth } from './AuthContext';
+import { auth } from '../services/firebase';
 
 interface DesignProjectContextType {
   preferences: DesignPreferences;
@@ -40,14 +26,14 @@ interface DesignProjectContextType {
   status: GenerationStatus;
   errorMessage: string | null;
   isDemoGeneration: boolean;
-  setCategory: (catId: SpaceCategoryId, subId: string) => void;
+  setCategory: (categoryId: SpaceCategoryId, subcategoryId: string) => void;
   setPhotoUri: (uri: string) => void;
-  setConsent: (consent: boolean) => void;
   updatePreferences: (updates: Partial<DesignPreferences>) => void;
-  resetWorkflow: () => void;
+  setConsent: (consent: boolean) => void;
   startGeneration: () => Promise<boolean>;
-  selectVariant: (variantId: string) => void;
-  updateSceneSettings: (settings: Partial<ThreeDSceneSettings>) => void;
+  resetWorkflow: () => void;
+  selectVariant: (variantId: string) => Promise<boolean>;
+  updateSceneSettings: (settings: Partial<ThreeDSceneSettings>) => Promise<boolean>;
   deleteProject: (projectId: string) => Promise<boolean>;
   loadProjectById: (projectId: string) => DesignProject | undefined;
   refreshProjects: () => Promise<void>;
@@ -55,8 +41,35 @@ interface DesignProjectContextType {
 
 const DesignProjectContext = createContext<DesignProjectContextType | undefined>(undefined);
 
+export const DEFAULT_PREFERENCES: DesignPreferences = {
+  categoryId: 'home-rooms',
+  subcategoryId: 'living-room',
+  photoUri: '',
+  consentGiven: false,
+  budgetChoice: 'Not sure yet',
+  style: 'Modern',
+  itemsToKeep: ['Flooring', 'Doors and windows'],
+  improvementGoals: ['Enhance lighting', 'Optimize layout'],
+  constraints: [],
+  additionalNotes: '',
+};
+
+export const DEFAULT_SCENE_SETTINGS: ThreeDSceneSettings = {
+  wallColor: '#F5F5DC',
+  floorType: 'wood',
+  lightingPreset: 'daylight',
+  cameraPreset: 'perspective',
+  furnitureVisible: {
+    seating: true,
+    tables: true,
+    storage: true,
+    plants: true,
+    lighting: true,
+  },
+};
+
 export const DesignProjectProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { user } = useAuth();
+  const { user, claimsReady } = useAuth();
   const [preferences, setPreferences] = useState<DesignPreferences>(DEFAULT_PREFERENCES);
   const [currentProject, setCurrentProject] = useState<DesignProject | null>(null);
   const [savedProjects, setSavedProjects] = useState<DesignProject[]>([]);
@@ -64,23 +77,43 @@ export const DesignProjectProvider: React.FC<{ children: React.ReactNode }> = ({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isDemoGeneration, setIsDemoGeneration] = useState(false);
 
-  // Load user's saved projects permanently from Supabase database
+  // Track active fetch to prevent stale async race conditions (Problem 5)
+  const activeFetchUid = useRef<string | null>(null);
+  const previousUserUid = useRef<string | null>(null);
+
+  // Clear state immediately when user switches or logs out (Problem 5)
+  useEffect(() => {
+    const currentUid = user?.uid || null;
+    if (previousUserUid.current !== currentUid) {
+      previousUserUid.current = currentUid;
+      setSavedProjects([]);
+      setCurrentProject(null);
+      setPreferences(DEFAULT_PREFERENCES);
+      setStatus('draft');
+      setErrorMessage(null);
+    }
+  }, [user?.uid]);
+
+  // Load user's saved projects from Supabase database
   const loadSavedProjects = useCallback(async () => {
     if (!user?.uid || !isSupabaseConfigured) {
-      // In offline/guest development mode, clear projects or leave as empty
-      if (!user) {
-        setSavedProjects([]);
-        setCurrentProject(null);
-      }
+      setSavedProjects([]);
+      setCurrentProject(null);
       return;
     }
+
+    const requestUid = user.uid;
+    activeFetchUid.current = requestUid;
 
     try {
       const { data, error } = await supabase
         .from('design_projects')
         .select('*')
-        .eq('user_id', user.uid)
+        .eq('user_id', requestUid)
         .order('created_at', { ascending: false });
+
+      // Check for stale response from previous user
+      if (activeFetchUid.current !== requestUid) return;
 
       if (error) {
         console.warn('[DesignProject] Error fetching projects from Supabase:', error.message);
@@ -117,21 +150,31 @@ export const DesignProjectProvider: React.FC<{ children: React.ReactNode }> = ({
           })
         );
 
-        setSavedProjects(mapped);
-        if (!currentProject && mapped.length > 0) {
-          setCurrentProject(mapped[0]);
+        if (activeFetchUid.current === requestUid) {
+          setSavedProjects(mapped);
+          if (mapped.length > 0) {
+            setCurrentProject(prev => prev && prev.userId === requestUid ? prev : mapped[0]);
+          } else {
+            setCurrentProject(null);
+          }
         }
       } else {
-        setSavedProjects([]);
+        if (activeFetchUid.current === requestUid) {
+          setSavedProjects([]);
+          setCurrentProject(null);
+        }
       }
     } catch (err: any) {
       console.warn('[DesignProject] Exception loading projects:', err.message);
     }
-  }, [user, currentProject]);
-
-  useEffect(() => {
-    loadSavedProjects();
   }, [user?.uid]);
+
+  // Load projects after user is authenticated AND claims are ready (Problem 10)
+  useEffect(() => {
+    if (user?.uid && claimsReady) {
+      loadSavedProjects();
+    }
+  }, [user?.uid, claimsReady, loadSavedProjects]);
 
   const setCategory = (catId: SpaceCategoryId, subId: string) => {
     setPreferences(prev => ({
@@ -148,17 +191,17 @@ export const DesignProjectProvider: React.FC<{ children: React.ReactNode }> = ({
     }));
   };
 
-  const setConsent = (consent: boolean) => {
-    setPreferences(prev => ({
-      ...prev,
-      consentGiven: consent,
-    }));
-  };
-
   const updatePreferences = (updates: Partial<DesignPreferences>) => {
     setPreferences(prev => ({
       ...prev,
       ...updates,
+    }));
+  };
+
+  const setConsent = (consent: boolean) => {
+    setPreferences(prev => ({
+      ...prev,
+      consentGiven: consent,
     }));
   };
 
@@ -191,28 +234,28 @@ export const DesignProjectProvider: React.FC<{ children: React.ReactNode }> = ({
     let effectivePhotoUrl = preferences.photoUri;
 
     try {
-      // 1. Upload captured photo to Supabase private storage if user is authenticated and Supabase is configured
+      // 1. Upload captured photo to Supabase private storage first (Problem 11)
       if (user?.uid && isSupabaseConfigured) {
-        try {
-          const uploadRes = await uploadRoomPhotoToSupabase(
-            preferences.photoUri,
-            user.uid,
-            projectId
-          );
+        const uploadRes = await uploadRoomPhotoToSupabase(
+          preferences.photoUri,
+          user.uid,
+          projectId
+        );
 
-          if (uploadRes.success && uploadRes.storagePath) {
-            storagePath = uploadRes.storagePath;
-            effectivePhotoUrl = uploadRes.signedUrl || preferences.photoUri;
-          } else {
-            console.warn('[DesignProject] Storage upload note:', uploadRes.error);
-          }
-        } catch (storageErr) {
-          console.warn('[DesignProject] Storage upload exception, continuing with local photo:', storageErr);
+        // Problem 11: Stop workflow if upload fails; do not send local mobile URI to remote backend
+        if (!uploadRes.success || !uploadRes.storagePath) {
+          const failureMsg = uploadRes.error || 'Failed to upload room photo to secure storage. Please check connection.';
+          setErrorMessage(failureMsg);
+          setStatus('failed');
+          return false;
         }
+
+        storagePath = uploadRes.storagePath;
+        effectivePhotoUrl = uploadRes.signedUrl || preferences.photoUri;
       }
 
-      // 2. Obtain Firebase ID token for protected backend endpoints
-      const idToken = user ? await auth?.currentUser?.getIdToken() : undefined;
+      // 2. Obtain fresh Firebase ID token for protected backend endpoint (Problem 1)
+      const idToken = user ? await auth?.currentUser?.getIdToken(true) : undefined;
 
       // 3. Request generation from backend
       const res = await requestDesignGeneration(
@@ -221,40 +264,37 @@ export const DesignProjectProvider: React.FC<{ children: React.ReactNode }> = ({
         idToken
       );
 
-      let variants: DesignVariant[] = DEMO_VARIANTS;
-      let suggestions: ImprovementSuggestion[] = DEMO_SUGGESTIONS;
-      let products: ProductRecommendation[] = DEMO_PRODUCTS;
-      let isDemo = true;
-
-      if (res.success && res.data) {
-        variants = res.data.variants || DEMO_VARIANTS;
-        suggestions = res.data.suggestions || DEMO_SUGGESTIONS;
-        products = res.data.products || DEMO_PRODUCTS;
-        isDemo = Boolean(res.data.isDemo);
-      } else {
-        throw new Error(res.error || 'Backend design generation failed.');
+      if (!res.success || !res.data) {
+        throw new Error(res.error || 'Design generation failed on the server.');
       }
 
-      setIsDemoGeneration(isDemo);
+      const variants = res.data.variants || [];
+      const suggestions = res.data.suggestions || [];
+      const products = res.data.products || [];
+      const isDemo = Boolean(res.data.isDemo);
+
+      if (variants.length === 0) {
+        throw new Error('No design variants were returned by the AI provider.');
+      }
 
       const newProject: DesignProject = {
         id: projectId,
         userId: effectiveUserId,
-        title: `${preferences.style} ${preferences.subcategoryId.replace('-', ' ')}`,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
+        title: `${preferences.style} ${preferences.subcategoryId.replace('-', ' ').replace(/\b\w/g, l => l.toUpperCase())}`,
         originalPhotoUri: effectivePhotoUrl,
         originalPhotoPath: storagePath,
         status: 'completed',
-        preferences: { ...preferences, photoUri: effectivePhotoUrl },
+        preferences,
         variants,
-        selectedVariantId: variants[1]?.id || variants[0]?.id,
         suggestions,
         products,
         sceneSettings: DEFAULT_SCENE_SETTINGS,
+        selectedVariantId: variants[0]?.id || 'var-1',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
       };
 
-      // 4. Persist to Supabase Database
+      // 4. Save completed project to Supabase database with error checking (Problem 4)
       if (user?.uid && isSupabaseConfigured) {
         const { error: insertError } = await supabase.from('design_projects').insert({
           id: newProject.id,
@@ -272,13 +312,16 @@ export const DesignProjectProvider: React.FC<{ children: React.ReactNode }> = ({
           updated_at: newProject.updatedAt,
         });
 
+        // Problem 4: Check error on insert
         if (insertError) {
-          console.warn('[DesignProject] Database insert note:', insertError.message);
+          console.error('[DesignProject] Database insert failed:', insertError.message);
+          setErrorMessage(`Saved locally, but database sync encountered an error: ${insertError.message}`);
         }
       }
 
       setCurrentProject(newProject);
       setSavedProjects(prev => [newProject, ...prev]);
+      setIsDemoGeneration(isDemo);
       setStatus('completed');
       return true;
     } catch (err: any) {
@@ -288,75 +331,108 @@ export const DesignProjectProvider: React.FC<{ children: React.ReactNode }> = ({
     }
   };
 
-  const selectVariant = async (variantId: string) => {
-    if (currentProject) {
-      setCurrentProject(prev => prev ? { ...prev, selectedVariantId: variantId } : null);
-      setSavedProjects(prev => 
-        prev.map(p => p.id === currentProject.id ? { ...p, selectedVariantId: variantId } : p)
-      );
+  // Problem 4: Check error on update with state rollback on failure
+  const selectVariant = async (variantId: string): Promise<boolean> => {
+    if (!currentProject) return false;
+    const prevVariantId = currentProject.selectedVariantId;
 
-      if (user?.uid && isSupabaseConfigured) {
-        try {
-          await supabase
-            .from('design_projects')
-            .update({ selected_variant_id: variantId, updated_at: new Date().toISOString() })
-            .eq('id', currentProject.id);
-        } catch (e: any) {
-          console.warn('[DesignProject] Error updating variant:', e.message);
-        }
-      }
-    }
-  };
-
-  const updateSceneSettings = async (settings: Partial<ThreeDSceneSettings>) => {
-    if (currentProject) {
-      const updatedSettings = { ...currentProject.sceneSettings, ...settings };
-      setCurrentProject(prev => prev ? { ...prev, sceneSettings: updatedSettings } : null);
-      setSavedProjects(prev =>
-        prev.map(p => p.id === currentProject.id ? { ...p, sceneSettings: updatedSettings } : p)
-      );
-
-      if (user?.uid && isSupabaseConfigured) {
-        try {
-          await supabase
-            .from('design_projects')
-            .update({ scene_settings: updatedSettings, updated_at: new Date().toISOString() })
-            .eq('id', currentProject.id);
-        } catch (e: any) {
-          console.warn('[DesignProject] Error updating scene settings:', e.message);
-        }
-      }
-    }
-  };
-
-  const deleteProject = async (projectId: string): Promise<boolean> => {
-    const projectToDelete = savedProjects.find(p => p.id === projectId);
+    // Optimistic update
+    setCurrentProject(prev => prev ? { ...prev, selectedVariantId: variantId } : null);
+    setSavedProjects(prev => 
+      prev.map(p => p.id === currentProject.id ? { ...p, selectedVariantId: variantId } : p)
+    );
 
     if (user?.uid && isSupabaseConfigured) {
-      try {
-        await supabase.from('design_projects').delete().eq('id', projectId);
-        if (projectToDelete?.originalPhotoPath) {
+      const { error } = await supabase
+        .from('design_projects')
+        .update({ selected_variant_id: variantId, updated_at: new Date().toISOString() })
+        .eq('id', currentProject.id)
+        .eq('user_id', user.uid);
+
+      if (error) {
+        console.error('[DesignProject] Error updating variant in Supabase:', error.message);
+        // Rollback on failure
+        setCurrentProject(prev => prev ? { ...prev, selectedVariantId: prevVariantId } : null);
+        setSavedProjects(prev =>
+          prev.map(p => p.id === currentProject.id ? { ...p, selectedVariantId: prevVariantId } : p)
+        );
+        return false;
+      }
+    }
+    return true;
+  };
+
+  // Problem 4: Check error on update with rollback
+  const updateSceneSettings = async (settings: Partial<ThreeDSceneSettings>): Promise<boolean> => {
+    if (!currentProject) return false;
+    const prevSettings = currentProject.sceneSettings;
+    const updatedSettings = { ...currentProject.sceneSettings, ...settings };
+
+    // Optimistic update
+    setCurrentProject(prev => prev ? { ...prev, sceneSettings: updatedSettings } : null);
+    setSavedProjects(prev =>
+      prev.map(p => p.id === currentProject.id ? { ...p, sceneSettings: updatedSettings } : p)
+    );
+
+    if (user?.uid && isSupabaseConfigured) {
+      const { error } = await supabase
+        .from('design_projects')
+        .update({ scene_settings: updatedSettings, updated_at: new Date().toISOString() })
+        .eq('id', currentProject.id)
+        .eq('user_id', user.uid);
+
+      if (error) {
+        console.error('[DesignProject] Error updating scene settings in Supabase:', error.message);
+        // Rollback
+        setCurrentProject(prev => prev ? { ...prev, sceneSettings: prevSettings } : null);
+        setSavedProjects(prev =>
+          prev.map(p => p.id === currentProject.id ? { ...p, sceneSettings: prevSettings } : p)
+        );
+        return false;
+      }
+    }
+    return true;
+  };
+
+  // Problem 4: Check error on delete, never report success on failure
+  const deleteProject = async (projectId: string): Promise<boolean> => {
+    const projectToDelete = savedProjects.find(p => p.id === projectId);
+    if (!projectToDelete) return false;
+
+    if (user?.uid && isSupabaseConfigured) {
+      const { error } = await supabase
+        .from('design_projects')
+        .delete()
+        .eq('id', projectId)
+        .eq('user_id', user.uid);
+
+      if (error) {
+        console.error('[DesignProject] Error deleting project from Supabase:', error.message);
+        return false; // Do not report success or delete from local state
+      }
+
+      if (projectToDelete.originalPhotoPath) {
+        try {
           await supabase.storage.from('room-photos').remove([projectToDelete.originalPhotoPath]);
+        } catch (storageErr) {
+          console.warn('[DesignProject] Storage photo cleanup note:', storageErr);
         }
-      } catch (e: any) {
-        console.warn('[DesignProject] Error deleting project from Supabase:', e.message);
       }
     }
 
     setSavedProjects(prev => prev.filter(p => p.id !== projectId));
     if (currentProject?.id === projectId) {
-      setCurrentProject(null);
+      setCurrentProject(savedProjects.find(p => p.id !== projectId) || null);
     }
     return true;
   };
 
-  const loadProjectById = (projectId: string) => {
-    const proj = savedProjects.find(p => p.id === projectId);
-    if (proj) {
-      setCurrentProject(proj);
-      setPreferences(proj.preferences);
-    }
-    return proj;
+  const loadProjectById = (projectId: string): DesignProject | undefined => {
+    return savedProjects.find(p => p.id === projectId);
+  };
+
+  const refreshProjects = async () => {
+    await loadSavedProjects();
   };
 
   return (
@@ -370,15 +446,15 @@ export const DesignProjectProvider: React.FC<{ children: React.ReactNode }> = ({
         isDemoGeneration,
         setCategory,
         setPhotoUri,
-        setConsent,
         updatePreferences,
-        resetWorkflow,
+        setConsent,
         startGeneration,
+        resetWorkflow,
         selectVariant,
         updateSceneSettings,
         deleteProject,
         loadProjectById,
-        refreshProjects: loadSavedProjects,
+        refreshProjects,
       }}
     >
       {children}

@@ -15,6 +15,7 @@ export interface RoomAnalysisData {
   detectedLighting?: string;
   detectedFeatures?: string[];
   spatialNotes?: string;
+  isDemo?: boolean;
 }
 
 export interface UserProfile {

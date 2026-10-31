@@ -140,3 +140,17 @@ def test_auth_sync_claims_success():
     assert data["success"] is True
     assert data["uid"] == "user-123"
     assert data["claims"]["role"] == "authenticated"
+
+
+def test_delete_account_requires_auth():
+    """Account deletion must reject unauthenticated requests with 401."""
+    response = client.delete("/api/auth/delete-account")
+    assert response.status_code == 401
+
+def test_delete_account_success():
+    """Account deletion succeeds with valid auth token."""
+    response = client.delete("/api/auth/delete-account", headers=AUTH_HEADER)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["success"] is True
+    assert data["uid"] == "user-123"

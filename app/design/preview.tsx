@@ -45,7 +45,7 @@ export default function PhotoPreviewScreen() {
   const [messages, setMessages] = useState<Array<{ role: 'user' | 'assistant'; text: string }>>([
     {
       role: 'assistant',
-      text: 'Hello! I have visually inspected your room photo. Ask me anything about what to remove, how to fix your lighting, or how to arrange your furniture!',
+      text: 'Hello! I am your AI Spatial Architect. Once your room photograph is scanned, ask me anything about lighting, layout improvements, or what items to remove.',
     },
   ]);
 
@@ -55,8 +55,18 @@ export default function PhotoPreviewScreen() {
     if (!uri) return;
     setAnalyzing(true);
     setAnalysisError(null);
+    setDiagnosis(null);
 
-    const res = await analyzeImage(uri);
+    let idToken: string | undefined = undefined;
+    try {
+      if (auth?.currentUser) {
+        idToken = await auth.currentUser.getIdToken(false);
+      }
+    } catch (e) {
+      console.warn('[Vision] Token retrieval note:', e);
+    }
+
+    const res = await analyzeImage(uri, idToken);
     setAnalyzing(false);
 
     if (res.success && res.data) {
@@ -65,31 +75,15 @@ export default function PhotoPreviewScreen() {
       if (res.data.suggestedTemplate) {
         updatePreferences({ style: res.data.suggestedTemplate as DesignStyle });
       }
+      setMessages([
+        {
+          role: 'assistant',
+          text: `Hello! I have analyzed your ${res.data.roomType}. Ask me anything about the identified flaws, recommended lighting, or how to arrange your layout!`,
+        },
+      ]);
     } else {
-      // Graceful fallback diagnosis if backend is offline
-      setDiagnosis({
-        roomType: 'Living & Activity Area',
-        detectedObjects: ['Main Seating', 'Primary Wall', 'Daylight Window', 'Floor Area'],
-        correctionsNeeded: [
-          'Direct harsh unshaded lighting casts heavy shadows in room corners',
-          'Furniture blocks the primary natural walkway from entry',
-          'Bare vertical walls cause sound echo and wasted storage height',
-          'Surface clutter reduces open, airy visual space by ~30%',
-        ],
-        itemsToRemove: [
-          'Duplicate small decorative items crowding flat surfaces',
-          'Bulky secondary stools/tables restricting walkways',
-          'Loose exposed cables and floor cords',
-        ],
-        diySelfImprovements: [
-          'Shift main seating 30cm closer to natural window daylight',
-          'Swap bare white bulb for 2700K–3000K warm diffused floor lamp',
-          'Mount 2 shallow floating wall shelves for vertical storage',
-          'Place a textured rug to anchor and define the seating zone',
-        ],
-        suggestedTemplate: 'Modern Scandinavian',
-        scores: { lighting: '5/10', spaciousness: '6/10', coziness: '5/10' },
-      });
+      // Problem 2 Fix: Do not fake successful diagnosis! Display actual API error.
+      setAnalysisError(res.error || 'AI spatial analysis could not be completed. Please check connection and try again.');
     }
   };
 
@@ -206,9 +200,23 @@ export default function PhotoPreviewScreen() {
 
           {/* Quick Edit Overlay */}
           <View style={styles.photoTopBadges}>
-            <View style={styles.scanBadge}>
-              <Ionicons name="sparkles" size={13} color="#FFFFFF" />
-              <Text style={styles.scanBadgeText}>AI Vision Active</Text>
+            <View style={[styles.scanBadge, analysisError ? { backgroundColor: 'rgba(220, 38, 38, 0.85)' } : null]}>
+              <Ionicons 
+                name={analyzing ? "sync-outline" : analysisError ? "alert-circle-outline" : "sparkles"} 
+                size={13} 
+                color="#FFFFFF" 
+              />
+              <Text style={styles.scanBadgeText}>
+                {analyzing 
+                  ? "Scanning Space..." 
+                  : analysisError 
+                    ? "Analysis Failed" 
+                    : diagnosis?.isDemo 
+                      ? "Demo Vision Mode" 
+                      : diagnosis 
+                        ? "AI Vision Inspected" 
+                        : "Ready for Inspection"}
+              </Text>
             </View>
           </View>
 
@@ -233,6 +241,26 @@ export default function PhotoPreviewScreen() {
           </Card>
         ) : null}
 
+        {/* Problem 2 Fix: Display Real Analysis Error & Retry Button */}
+        {analysisError && !analyzing ? (
+          <Card style={[styles.card, { backgroundColor: '#FEF2F2', borderColor: '#FCA5A5' }]} variant="outlined">
+            <View style={styles.cardTitleRow}>
+              <Ionicons name="alert-circle" size={20} color="#DC2626" />
+              <Text style={[styles.cardTitle, { color: '#991B1B' }]}>Room Analysis Error</Text>
+            </View>
+            <Text style={{ fontSize: 13, color: '#7F1D1D', marginBottom: 12, lineHeight: 18 }}>
+              {analysisError}
+            </Text>
+            <Button
+              title="Retry AI Room Scan"
+              variant="outline"
+              onPress={() => {
+                if (photoUri) runRoomScan(photoUri);
+              }}
+            />
+          </Card>
+        ) : null}
+
         {/* Diagnosis Results Breakdown */}
         {diagnosis && !analyzing ? (
           <View style={styles.diagnosisSection}>
@@ -240,9 +268,14 @@ export default function PhotoPreviewScreen() {
             <View style={styles.diagnosisHeaderRow}>
               <View>
                 <Text style={styles.diagnosisRoomType}>{diagnosis.roomType}</Text>
-                <Text style={styles.diagnosisSub}>Personalized AI inspection of your space</Text>
+                <Text style={styles.diagnosisSub}>
+                  {diagnosis.isDemo ? 'Sample Demo inspection of space' : 'Personalized AI inspection of your space'}
+                </Text>
               </View>
-              <Badge label={diagnosis.suggestedTemplate || 'Modern'} variant="primary" />
+              <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center' }}>
+                {diagnosis.isDemo && <Badge label="Demo" variant="secondary" />}
+                <Badge label={diagnosis.suggestedTemplate || 'Modern'} variant="primary" />
+              </View>
             </View>
 
             {/* Room Potential Scores */}

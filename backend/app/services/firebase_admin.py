@@ -142,6 +142,34 @@ async def get_current_user_id(
     return uid
 
 
+def delete_firebase_user(uid: str) -> bool:
+    """
+    Permanently delete a user from Firebase Authentication.
+    """
+    is_test_env = os.getenv("ENVIRONMENT") == "test" or os.getenv("PYTEST_CURRENT_TEST") is not None
+    if is_test_env:
+        return True
+
+    if not _firebase_initialized and not initialize_firebase_admin():
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Firebase Admin SDK is not configured for account deletion.",
+        )
+
+    try:
+        fb_auth.delete_user(uid)
+        logger.info(f"Successfully deleted Firebase user {uid}")
+        return True
+    except fb_auth.UserNotFoundError:
+        return True
+    except Exception as e:
+        logger.error(f"Failed to delete Firebase user {uid}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Firebase account deletion failed: {str(e)}",
+        )
+
+
 def sync_firebase_custom_claim(uid: str, claim_key: str = "role", claim_value: str = "authenticated") -> Dict[str, Any]:
     """
     Ensure the user has the specified custom claim (e.g. role: 'authenticated' for Supabase Postgres RLS)

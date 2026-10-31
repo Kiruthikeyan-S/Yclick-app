@@ -25,6 +25,7 @@ interface AuthContextType {
   user: UserProfile | null;
   loading: boolean;
   isFirebaseReady: boolean;
+  claimsReady: boolean;
   login: (email: string, pass: string) => Promise<{ success: boolean; error?: string }>;
   signup: (name: string, email: string, pass: string) => Promise<{ success: boolean; error?: string }>;
   loginWithGoogle: () => Promise<{ success: boolean; error?: string }>;
@@ -34,6 +35,7 @@ interface AuthContextType {
   deleteAccount: () => Promise<{ success: boolean; error?: string }>;
   refreshUser: () => Promise<void>;
   loginAsGuest: () => void;
+  getIdToken: (forceRefresh?: boolean) => Promise<string | null>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -49,6 +51,7 @@ const DEMO_USER: UserProfile = {
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
+  const [claimsReady, setClaimsReady] = useState(false);
   const isFirebaseReady = isFirebaseConfigured() && auth !== null;
 
   // 1. Instant session restoration from local AsyncStorage on boot
@@ -70,7 +73,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return () => { isMounted = false; };
   }, []);
 
-  // Save/clear local session cache
   const persistSession = async (profile: UserProfile | null) => {
     try {
       if (profile) {
@@ -84,24 +86,43 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   // Synchronize 'role: authenticated' claim for Supabase third-party authentication
-  const syncCustomClaims = async (fbUser: User) => {
+  const syncCustomClaims = async (fbUser: User): Promise<boolean> => {
     try {
       const tokenResult = await fbUser.getIdTokenResult(false);
-      if (tokenResult.claims.role !== 'authenticated') {
-        const idToken = await fbUser.getIdToken();
-        const res = await fetch(`${API_BASE_URL}/api/auth/sync-claims`, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${idToken}`,
-            'Content-Type': 'application/json',
-          },
-        });
-        if (res.ok) {
-          await fbUser.getIdToken(true);
-        }
+      if (tokenResult.claims.role === 'authenticated') {
+        setClaimsReady(true);
+        return true;
+      }
+
+      const idToken = await fbUser.getIdToken();
+      const res = await fetch(`${API_BASE_URL}/api/auth/sync-claims`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${idToken}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (res.ok) {
+        // Force refresh token so client claims match
+        await fbUser.getIdToken(true);
+        setClaimsReady(true);
+        return true;
       }
     } catch (e) {
       console.warn('[Auth] Custom claim sync note:', e);
+    }
+    setClaimsReady(true); // Don't permanently block UI on network glitch
+    return false;
+  };
+
+  const getIdToken = async (forceRefresh: boolean = false): Promise<string | null> => {
+    if (!auth?.currentUser) return null;
+    try {
+      return await auth.currentUser.getIdToken(forceRefresh);
+    } catch (err) {
+      console.warn('[Auth] Error getting ID token:', err);
+      return null;
     }
   };
 
@@ -110,6 +131,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!isFirebaseReady) {
       setUser(DEMO_USER);
       setLoading(false);
+      setClaimsReady(true);
       return;
     }
 
@@ -152,15 +174,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         await persistSession(activeProfile);
         setLoading(false);
 
-        // Synchronize Supabase claim in background
-        syncCustomClaims(fbUser);
+        // Ensure custom claims are synchronized before protected operations
+        await syncCustomClaims(fbUser);
       } else {
-        // Only clear if not guest
         setUser(prev => {
           if (prev && prev.uid === 'guest-user') return prev;
           persistSession(null);
           return null;
         });
+        setClaimsReady(false);
         setLoading(false);
       }
     });
@@ -296,8 +318,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         await syncCustomClaims(fbUser);
         return { success: true };
       } else {
-        // Mobile Google sign-in: seamless one-tap authentication
-        // If native client ID is pending, provide frictionless demo sign-in
         const demo: UserProfile = {
           uid: 'google-user-' + Date.now(),
           email: 'google.designer@yclick.design',
@@ -324,6 +344,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       console.warn('[Auth] Sign out error:', err);
     } finally {
       setUser(null);
+      setClaimsReady(false);
       await persistSession(null);
     }
   };
@@ -348,6 +369,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
+  // Problem 8: Server-side account deletion cleaning up Supabase records, storage objects, and Firebase Auth
   const deleteAccount = async (): Promise<{ success: boolean; error?: string }> => {
     if (!isFirebaseReady || !auth?.currentUser) {
       setUser(null);
@@ -355,16 +377,40 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { success: true };
     }
     try {
-      const uid = auth.currentUser.uid;
-      if (db) {
-        await deleteDoc(doc(db, 'users', uid));
+      const idToken = await auth.currentUser.getIdToken();
+      const res = await fetch(`${API_BASE_URL}/api/auth/delete-account`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${idToken}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!res.ok) {
+        const errDetail = await res.text();
+        throw new Error(`Failed to delete account from server: ${errDetail}`);
       }
-      await fbDeleteUser(auth.currentUser);
+
       setUser(null);
+      setClaimsReady(false);
       await persistSession(null);
       return { success: true };
     } catch (err: any) {
-      return { success: false, error: err.message || 'Failed to delete account. You may need to sign in again first.' };
+      // Fallback direct Firebase deletion if server is unreachable
+      try {
+        if (db && auth.currentUser) {
+          await deleteDoc(doc(db, 'users', auth.currentUser.uid));
+        }
+        if (auth.currentUser) {
+          await fbDeleteUser(auth.currentUser);
+        }
+        setUser(null);
+        setClaimsReady(false);
+        await persistSession(null);
+        return { success: true };
+      } catch (fbErr: any) {
+        return { success: false, error: fbErr.message || err.message || 'Failed to delete account. Please sign in again first.' };
+      }
     }
   };
 
@@ -393,6 +439,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       isEmailVerified: true,
     };
     setUser(guestUser);
+    setClaimsReady(true);
     persistSession(guestUser);
   };
 
@@ -402,6 +449,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         user,
         loading,
         isFirebaseReady,
+        claimsReady,
         login,
         signup,
         loginWithGoogle,
@@ -411,6 +459,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         deleteAccount,
         refreshUser,
         loginAsGuest,
+        getIdToken,
       }}
     >
       {children}

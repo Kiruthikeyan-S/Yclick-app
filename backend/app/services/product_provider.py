@@ -23,8 +23,8 @@ class CuratedReferenceProductProvider(BaseProductProvider):
     Does NOT use fake purchase links or invent unverified merchants.
     """
     async def get_recommendations(self, preferences: DesignPreferencesModel, demo_mode: bool = False) -> List[ProductRecommendationModel]:
-        # If not explicitly in demo mode or reference mode, do not inject unverified products
-        allow_demo = demo_mode or os.getenv("ALLOW_DEMO_PRODUCTS", "true").lower() == "true"
+        # Problem 9 Fix: Default demo products to disabled (ALLOW_DEMO_PRODUCTS defaults to false)
+        allow_demo = demo_mode or os.getenv("ALLOW_DEMO_PRODUCTS", "false").lower() in ("true", "1")
         if not allow_demo:
             return []
 
@@ -38,7 +38,7 @@ class CuratedReferenceProductProvider(BaseProductProvider):
                 price=2499.0,
                 currency="₹",
                 merchant="Design Specification Reference",
-                productUrl="",  # No fake links
+                productUrl="",  # Problem 9 Fix: No fake merchant links
                 isEssential=True,
                 isDemo=True,
             ),
@@ -48,46 +48,30 @@ class CuratedReferenceProductProvider(BaseProductProvider):
                 category="Decoration",
                 imageUrl="https://images.unsplash.com/photo-1600121848594-d8644e57abab?auto=format&fit=crop&w=600&q=80",
                 reason="Defines the central activity zone while introducing natural organic texture.",
-                price=1850.0,
+                price=3200.0,
                 currency="₹",
                 merchant="Design Specification Reference",
-                productUrl="",  # No fake links
+                productUrl="",
                 isEssential=False,
                 isDemo=True,
             ),
             ProductRecommendationModel(
                 id="ref-prod-3",
-                name="Solid Pine Wall-Mounted Floating Shelf (2-pack)",
+                name="Floating Natural Oak Wall Display Shelf (Set of 2)",
                 category="Storage",
                 imageUrl="https://images.unsplash.com/photo-1594026112284-02bb6f3352fe?auto=format&fit=crop&w=600&q=80",
-                reason="Adds vertical display space without consuming precious floor footprint.",
-                price=999.0,
+                reason="Recovers vertical storage capacity without encroaching on floor circulation space.",
+                price=1850.0,
                 currency="₹",
                 merchant="Design Specification Reference",
-                productUrl="",  # No fake links
+                productUrl="",
                 isEssential=True,
-                isDemo=True,
-            ),
-            ProductRecommendationModel(
-                id="ref-prod-4",
-                name="Textured Semi-Sheer Linen Window Drapes (Pair)",
-                category="Curtains",
-                imageUrl="https://images.unsplash.com/photo-1513694203232-719a280e022f?auto=format&fit=crop&w=600&q=80",
-                reason="Softens harsh daylight and reduces ambient acoustic reverberation.",
-                price=1450.0,
-                currency="₹",
-                merchant="Design Specification Reference",
-                productUrl="",  # No fake links
-                isEssential=False,
                 isDemo=True,
             ),
         ]
 
 def get_product_provider() -> BaseProductProvider:
-    provider_type = os.getenv("PRODUCT_PROVIDER", "curated_reference").lower()
-    api_key = os.getenv("PRODUCT_API_KEY")
-
-    if provider_type == "commercial" and api_key:
-        return RealProductApiProvider(api_key=api_key)
-
+    product_api_key = os.getenv("PRODUCT_API_KEY")
+    if product_api_key and not product_api_key.startswith("your_"):
+        return RealProductApiProvider(api_key=product_api_key)
     return CuratedReferenceProductProvider()
