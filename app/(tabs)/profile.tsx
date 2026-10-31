@@ -112,7 +112,7 @@ export default function ProfileScreen() {
                 </View>
                 <View>
                   <Text style={styles.menuTitle}>Storage Infrastructure</Text>
-                  <Text style={styles.menuSubtitle}>Supabase Storage (100% Free Tier • pptlsxpqyxewdkvhgzli)</Text>
+                  <Text style={styles.menuSubtitle}>Supabase Private Storage & Database (Active)</Text>
                 </View>
               </View>
               <View style={styles.activePill}>

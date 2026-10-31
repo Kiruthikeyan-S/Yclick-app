@@ -1,10 +1,12 @@
 import os
 import io
+import re
 import json
 import logging
 import httpx
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from PIL import Image
+from fastapi import HTTPException, status
 from ..models.schemas import (
     ImprovementSuggestionModel,
     DesignPreferencesModel,
@@ -15,41 +17,123 @@ from .groq_service import groq_service
 
 logger = logging.getLogger(__name__)
 
+def _extract_json_object(raw_text: str) -> Optional[Dict[str, Any]]:
+    """Extract a JSON object from text that may contain markdown code fences or conversational wrappers."""
+    cleaned = raw_text.strip()
+    if cleaned.startswith("```json"):
+        cleaned = cleaned[7:]
+    elif cleaned.startswith("```"):
+        cleaned = cleaned[3:]
+    if cleaned.endswith("```"):
+        cleaned = cleaned[:-3]
+    cleaned = cleaned.strip()
+
+    try:
+        return json.loads(cleaned)
+    except Exception:
+        # Fallback: find outermost curly braces
+        match = re.search(r"\{.*\}", cleaned, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group(0))
+            except Exception:
+                pass
+    return None
+
 class SpatialAnalysisEngine:
     @staticmethod
-    async def analyze_space_photo(image_bytes: Optional[bytes] = None, filename: str = "space.jpg") -> AnalyzeImageResponse:
+    async def analyze_space_photo(
+        image_bytes: Optional[bytes] = None, 
+        filename: str = "space.jpg",
+        demo_mode: bool = False
+    ) -> AnalyzeImageResponse:
         account_id = os.getenv("CLOUDFLARE_ACCOUNT_ID")
         token = os.getenv("CLOUDFLARE_API_TOKEN")
+        is_demo_allowed = demo_mode or os.getenv("ALLOW_DEMO_MODE", "false").lower() in ("true", "1") or os.getenv("DEMO_MODE", "false").lower() in ("true", "1")
 
-        # 1. Try Cloudflare LLaVA Vision + Groq if image bytes are provided
-        if image_bytes and account_id and token:
-            try:
-                # Resize image to max 512x512 for fast processing
-                im = Image.open(io.BytesIO(image_bytes))
-                im.thumbnail((512, 512))
-                buf = io.BytesIO()
-                im.save(buf, format="JPEG", quality=80)
-                compressed_bytes = list(buf.getvalue())
+        if not image_bytes:
+            if is_demo_allowed:
+                return SpatialAnalysisEngine._get_demo_response()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Image bytes are required for spatial analysis."
+            )
 
-                # Step A: Cloudflare LLaVA vision scan
-                cf_url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/@cf/llava-hf/llava-1.5-7b-hf"
-                cf_headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-                cf_payload = {
-                    "prompt": "Describe all furniture, windows, lighting, clutter, and structural details in this room photograph.",
-                    "image": compressed_bytes,
-                    "max_tokens": 300,
-                }
+        # 1. Image format and decoding verification via Pillow
+        try:
+            im = Image.open(io.BytesIO(image_bytes))
+            if im.mode not in ("RGB", "L"):
+                im = im.convert("RGB")
+            im.thumbnail((512, 512), Image.Resampling.LANCZOS)
+            buf = io.BytesIO()
+            im.save(buf, format="JPEG", quality=85)
+            compressed_bytes = list(buf.getvalue())
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Uploaded file is not a valid or decodable image: {str(e)}"
+            )
 
-                vision_desc = ""
-                async with httpx.AsyncClient(timeout=25.0) as client:
-                    cf_res = await client.post(cf_url, headers=cf_headers, json=cf_payload)
-                    if cf_res.status_code == 200:
-                        cf_data = cf_res.json()
-                        vision_desc = cf_data.get("result", {}).get("description", "")
+        # 2. Check service configuration
+        if not (account_id and token and token.startswith("cfut_")):
+            if is_demo_allowed:
+                return SpatialAnalysisEngine._get_demo_response()
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Cloudflare Workers AI credentials not configured on backend (CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN)."
+            )
 
-                # Step B: Groq structured analysis
-                if vision_desc and groq_service.is_configured:
-                    prompt = f"""Based on this room visual description:
+        if not groq_service.is_configured:
+            if is_demo_allowed:
+                return SpatialAnalysisEngine._get_demo_response()
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Groq API key is not configured on backend (GROQ_API_KEY)."
+            )
+
+        # 3. Cloudflare LLaVA Vision Scan
+        vision_desc = ""
+        cf_url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/@cf/llava-hf/llava-1.5-7b-hf"
+        cf_headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        cf_payload = {
+            "prompt": "Describe all furniture, windows, lighting, clutter, structural details, and surfaces in this room photograph.",
+            "image": compressed_bytes,
+            "max_tokens": 300,
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                cf_res = await client.post(cf_url, headers=cf_headers, json=cf_payload)
+                if cf_res.status_code == 200:
+                    cf_data = cf_res.json()
+                    vision_desc = cf_data.get("result", {}).get("description", "")
+                else:
+                    logger.error(f"Cloudflare Vision API error {cf_res.status_code}: {cf_res.text}")
+                    if not is_demo_allowed:
+                        raise HTTPException(
+                            status_code=status.HTTP_502_BAD_GATEWAY,
+                            detail=f"Cloudflare Vision service error ({cf_res.status_code}): {cf_res.text}"
+                        )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Cloudflare Vision request exception: {e}")
+            if not is_demo_allowed:
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail=f"Failed to communicate with Cloudflare Vision AI: {str(e)}"
+                )
+
+        if not vision_desc:
+            if is_demo_allowed:
+                return SpatialAnalysisEngine._get_demo_response()
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Vision AI could not generate a visual description from the room photograph."
+            )
+
+        # 4. Groq Structured Room Diagnosis
+        prompt = f"""Based on this room visual description:
 "{vision_desc}"
 
 Act as a master interior architect. Output a JSON diagnosis with:
@@ -63,36 +147,53 @@ Act as a master interior architect. Output a JSON diagnosis with:
 
 Return ONLY valid JSON. No markdown ticks, no preamble."""
 
-                    raw_groq = await groq_service.chat([{"role": "user", "content": prompt}], max_tokens=900)
-                    clean = raw_groq.strip()
-                    if clean.startswith("```json"): clean = clean[7:]
-                    if clean.startswith("```"): clean = clean[3:]
-                    if clean.endswith("```"): clean = clean[:-3]
-                    parsed = json.loads(clean.strip())
+        try:
+            raw_groq = await groq_service.chat([{"role": "user", "content": prompt}], max_tokens=1000)
+            parsed = _extract_json_object(raw_groq)
 
-                    scores_data = parsed.get("scores", {})
-                    return AnalyzeImageResponse(
-                        roomType=parsed.get("roomType", "Living Space"),
-                        detectedObjects=parsed.get("detectedObjects", []),
-                        correctionsNeeded=parsed.get("correctionsNeeded", []),
-                        itemsToRemove=parsed.get("itemsToRemove", []),
-                        diySelfImprovements=parsed.get("diySelfImprovements", []),
-                        suggestedTemplate=parsed.get("suggestedTemplate", "Modern Scandinavian"),
-                        scores=RoomScores(
-                            lighting=scores_data.get("lighting", "5/10"),
-                            spaciousness=scores_data.get("spaciousness", "6/10"),
-                            coziness=scores_data.get("coziness", "5/10"),
-                        ),
-                        detectedLighting="Natural daylight with secondary shadows",
-                        detectedFeatures=parsed.get("detectedObjects", [])[:4],
-                        spatialNotes=f"Identified {len(parsed.get('detectedObjects', []))} key room elements with immediate self-improvement opportunities.",
+            if not parsed:
+                logger.error(f"Failed to extract JSON from Groq output: {raw_groq}")
+                if not is_demo_allowed:
+                    raise HTTPException(
+                        status_code=status.HTTP_502_BAD_GATEWAY,
+                        detail="AI diagnosis engine returned malformed structured data."
                     )
-            except Exception as e:
-                logger.warning(f"AI Vision diagnosis fallback: {e}")
+                return SpatialAnalysisEngine._get_demo_response()
 
-        # Fallback diagnosis
+            scores_data = parsed.get("scores", {})
+            return AnalyzeImageResponse(
+                roomType=parsed.get("roomType", "Living Space"),
+                detectedObjects=parsed.get("detectedObjects", []),
+                correctionsNeeded=parsed.get("correctionsNeeded", []),
+                itemsToRemove=parsed.get("itemsToRemove", []),
+                diySelfImprovements=parsed.get("diySelfImprovements", []),
+                suggestedTemplate=parsed.get("suggestedTemplate", "Modern Scandinavian"),
+                scores=RoomScores(
+                    lighting=str(scores_data.get("lighting", "6/10")),
+                    spaciousness=str(scores_data.get("spaciousness", "6/10")),
+                    coziness=str(scores_data.get("coziness", "5/10")),
+                ),
+                detectedLighting="Natural daylight with secondary shadows",
+                detectedFeatures=parsed.get("detectedObjects", [])[:4],
+                spatialNotes=f"Identified {len(parsed.get('detectedObjects', []))} key room elements with actionable DIY steps.",
+                isDemo=False,
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Groq diagnosis exception: {e}")
+            if is_demo_allowed:
+                return SpatialAnalysisEngine._get_demo_response()
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Groq interior diagnosis service failed: {str(e)}"
+            )
+
+    @staticmethod
+    def _get_demo_response() -> AnalyzeImageResponse:
+        """Provide transparent fallback diagnosis only when explicitly permitted in demo mode."""
         return AnalyzeImageResponse(
-            roomType="Living & Work Space",
+            roomType="Living & Work Space (Demo)",
             detectedObjects=["Primary Seating", "Perimeter Wall", "Window Opening", "Floor Surface"],
             correctionsNeeded=[
                 "Unshaded direct lighting creates harsh shadows in corners",
@@ -115,7 +216,8 @@ Return ONLY valid JSON. No markdown ticks, no preamble."""
             scores=RoomScores(lighting="5/10", spaciousness="6/10", coziness="4/10"),
             detectedLighting="Direct Window Daylight with Secondary Shadowed Areas",
             detectedFeatures=["Perimeter walls", "Floor boundary", "Walking corridor", "Windows"],
-            spatialNotes="The room exhibits solid structural proportions with ample opportunity to optimize lighting and vertical wall storage."
+            spatialNotes="[Demo Mode] Predefined sample diagnosis. Configure Cloudflare and Groq credentials for live vision intelligence.",
+            isDemo=True,
         )
 
     @staticmethod
@@ -126,8 +228,8 @@ Return ONLY valid JSON. No markdown ticks, no preamble."""
                 groq_suggestions = await groq_service.generate_dynamic_recommendations(preferences)
                 if groq_suggestions and len(groq_suggestions) >= 3:
                     return groq_suggestions
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Groq recommendations failed, falling back: {e}")
 
         # 2. Fallback to curated architectural guidelines
         return [

@@ -12,8 +12,8 @@ import {
 } from 'firebase/auth';
 import { doc, getDoc, setDoc, deleteDoc } from 'firebase/firestore';
 import { auth, db, isFirebaseConfigured } from '../services/firebase';
-import { supabase, isSupabaseConfigured } from '../services/supabase';
 import { UserProfile } from '../types';
+import { API_BASE_URL } from '../services/api';
 
 interface AuthContextType {
   user: UserProfile | null;
@@ -45,9 +45,32 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [loading, setLoading] = useState(true);
   const isFirebaseReady = isFirebaseConfigured() && auth !== null;
 
+  // Synchronize 'role: authenticated' claim for Supabase third-party authentication
+  const syncCustomClaims = async (fbUser: User) => {
+    try {
+      const tokenResult = await fbUser.getIdTokenResult(false);
+      if (tokenResult.claims.role !== 'authenticated') {
+        const idToken = await fbUser.getIdToken();
+        const res = await fetch(`${API_BASE_URL}/api/auth/sync-claims`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${idToken}`,
+            'Content-Type': 'application/json',
+          },
+        });
+        if (res.ok) {
+          // Force refresh token to receive the new custom claim in client
+          await fbUser.getIdToken(true);
+        }
+      }
+    } catch (e) {
+      // Non-blocking: background sync failure shouldn't crash auth state
+      console.warn('[Auth] Custom claim sync note:', e);
+    }
+  };
+
   useEffect(() => {
     if (!isFirebaseReady) {
-      // In offline/demo mode, provide the active demo user session so the developer can navigate immediately
       setUser(DEMO_USER);
       setLoading(false);
       return;
@@ -75,7 +98,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               });
             }
           } catch (e) {
-            console.warn('Firestore user fetch note:', e);
+            console.warn('[Auth] Firestore user fetch note:', e);
           }
         }
 
@@ -86,6 +109,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           createdAt,
           isEmailVerified: fbUser.emailVerified,
         });
+
+        // Trigger background claim synchronization for Supabase RLS
+        syncCustomClaims(fbUser);
       } else {
         setUser(null);
       }
@@ -96,33 +122,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, [isFirebaseReady]);
 
   const login = async (email: string, pass: string) => {
-    // 1. Try Supabase Auth first
-    if (isSupabaseConfigured) {
-      try {
-        const { data: supaData, error: supaErr } = await supabase.auth.signInWithPassword({
-          email: email.trim(),
-          password: pass,
-        });
-
-        if (!supaErr && supaData.user) {
-          setUser({
-            uid: supaData.user.id,
-            email: supaData.user.email || email.trim(),
-            displayName: supaData.user.user_metadata?.displayName || email.split('@')[0] || 'Space Designer',
-            createdAt: supaData.user.created_at || new Date().toISOString(),
-            isEmailVerified: true,
-          });
-          return { success: true };
-        }
-      } catch (err) {
-        console.warn('Supabase sign-in note:', err);
-      }
-    }
-
-    // 2. Try Firebase Auth if configured
+    // Pure Firebase Authentication
     if (isFirebaseReady && auth) {
       try {
-        await signInWithEmailAndPassword(auth, email.trim(), pass);
+        const cred = await signInWithEmailAndPassword(auth, email.trim(), pass);
+        await syncCustomClaims(cred.user);
         return { success: true };
       } catch (err: any) {
         let message = 'Failed to sign in. Please verify your credentials or tap Create Account.';
@@ -137,7 +141,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     }
 
-    // 3. Fallback demo login if offline
+    // Fallback demo login if offline / in development mode
     if (email && pass.length >= 6) {
       setUser({
         ...DEMO_USER,
@@ -150,37 +154,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const signup = async (name: string, email: string, pass: string) => {
-    // 1. Register with Supabase Auth
-    if (isSupabaseConfigured) {
-      try {
-        const { data: supaData, error: supaErr } = await supabase.auth.signUp({
-          email: email.trim(),
-          password: pass,
-          options: {
-            data: { displayName: name.trim() },
-          },
-        });
-
-        if (!supaErr && supaData.user) {
-          setUser({
-            uid: supaData.user.id,
-            email: supaData.user.email || email.trim(),
-            displayName: name.trim() || 'Space Designer',
-            createdAt: new Date().toISOString(),
-            isEmailVerified: true,
-          });
-          return { success: true };
-        }
-
-        if (supaErr) {
-          return { success: false, error: supaErr.message };
-        }
-      } catch (err: any) {
-        console.warn('Supabase signup note:', err);
-      }
-    }
-
-    // 2. Register with Firebase if available
+    // Pure Firebase Authentication
     if (isFirebaseReady && auth) {
       try {
         const res = await createUserWithEmailAndPassword(auth, email.trim(), pass);
@@ -193,6 +167,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             createdAt: new Date().toISOString(),
           });
         }
+        await syncCustomClaims(res.user);
         return { success: true };
       } catch (err: any) {
         let message = 'Could not create account.';
@@ -207,7 +182,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     }
 
-    // 3. Fallback demo user
+    // Fallback demo user
     setUser({
       uid: `designer-${Date.now()}`,
       email,
@@ -236,11 +211,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const forgotPassword = async (email: string) => {
-    if (!isFirebaseReady) {
+    if (!isFirebaseReady || !auth) {
       return { success: true };
     }
     try {
-      await sendPasswordResetEmail(auth!, email.trim());
+      await sendPasswordResetEmail(auth, email.trim());
       return { success: true };
     } catch (err: any) {
       return { success: false, error: err.message || 'Could not send reset email' };
@@ -265,11 +240,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { success: true };
     }
     try {
-      const current = auth.currentUser;
+      const uid = auth.currentUser.uid;
       if (db) {
-        await deleteDoc(doc(db, 'users', current.uid));
+        await deleteDoc(doc(db, 'users', uid));
       }
-      await fbDeleteUser(current);
+      await fbDeleteUser(auth.currentUser);
       setUser(null);
       return { success: true };
     } catch (err: any) {

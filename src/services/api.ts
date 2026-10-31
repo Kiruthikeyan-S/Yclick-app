@@ -16,11 +16,18 @@ export interface ChatMessageParam {
   content: string;
 }
 
-export async function askDesignerChat(messages: ChatMessageParam[], roomContext: string = ''): Promise<{ success: boolean; reply: string; error?: string }> {
+export async function askDesignerChat(
+  messages: ChatMessageParam[], 
+  roomContext: string = '',
+  idToken?: string
+): Promise<{ success: boolean; reply: string; error?: string }> {
   try {
     const res = await fetch(`${API_BASE_URL}/api/designs/chat`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 
+        'Content-Type': 'application/json',
+        ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
+      },
       body: JSON.stringify({ messages, roomContext }),
     });
     if (res.ok) {

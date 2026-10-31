@@ -3,7 +3,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
-from .api.endpoints import router as design_router
+from .api.endpoints import router as design_router, auth_router
 
 load_dotenv()
 
@@ -19,21 +19,25 @@ os.makedirs(os.path.join(static_dir, "generated"), exist_ok=True)
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 # CORS configuration
-origins = os.getenv("CORS_ORIGINS", "*").split(",")
+raw_origins = os.getenv("CORS_ORIGINS", "*").split(",")
+origins = [o.strip() for o in raw_origins if o.strip()]
+is_wildcard = origins == ["*"] or not origins
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins if origins != ["*"] else ["*"],
-    allow_credentials=True,
+    allow_origins=origins if not is_wildcard else ["*"],
+    allow_credentials=not is_wildcard,  # Spec requires allow_credentials=False when allow_origins=["*"]
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# Routers
+app.include_router(auth_router)
 app.include_router(design_router)
 
 @app.get("/health")
 def health_check():
-    """Health check endpoint for mobile client connectivity verification."""
+    """Health check endpoint for mobile client connectivity verification (public)."""
     return {
         "status": "ok",
         "service": "YClick Backend",

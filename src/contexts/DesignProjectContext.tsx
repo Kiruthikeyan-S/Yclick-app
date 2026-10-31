@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { 
   DesignPreferences, 
   DesignProject, 
@@ -10,9 +10,15 @@ import {
   GenerationStatus 
 } from '../types';
 import { useAuth } from './AuthContext';
+import { auth } from '../services/firebase';
 import { DEMO_VARIANTS, DEMO_SUGGESTIONS, DEMO_PRODUCTS, DEFAULT_SCENE_SETTINGS } from '../services/demoData';
 import { requestDesignGeneration } from '../services/api';
-import { uploadRoomPhotoToSupabase } from '../services/supabase';
+import { 
+  supabase, 
+  isSupabaseConfigured, 
+  uploadRoomPhotoToSupabase, 
+  getSignedRoomPhotoUrl 
+} from '../services/supabase';
 
 const DEFAULT_PREFERENCES: DesignPreferences = {
   categoryId: 'home-rooms',
@@ -44,6 +50,7 @@ interface DesignProjectContextType {
   updateSceneSettings: (settings: Partial<ThreeDSceneSettings>) => void;
   deleteProject: (projectId: string) => Promise<boolean>;
   loadProjectById: (projectId: string) => DesignProject | undefined;
+  refreshProjects: () => Promise<void>;
 }
 
 const DesignProjectContext = createContext<DesignProjectContextType | undefined>(undefined);
@@ -57,34 +64,74 @@ export const DesignProjectProvider: React.FC<{ children: React.ReactNode }> = ({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isDemoGeneration, setIsDemoGeneration] = useState(false);
 
-  // Initialize with a sample project if new user
-  useEffect(() => {
-    if (savedProjects.length === 0) {
-      const initialProject: DesignProject = {
-        id: 'initial-sample-proj',
-        userId: user?.uid || 'demo-user-123',
-        title: 'Modern Living Room Refresh',
-        createdAt: new Date(Date.now() - 86400000 * 2).toISOString(),
-        updatedAt: new Date(Date.now() - 86400000).toISOString(),
-        originalPhotoUri: 'https://images.unsplash.com/photo-1555041469-a586c61ea9bc?auto=format&fit=crop&w=1000&q=80',
-        status: 'completed',
-        preferences: {
-          ...DEFAULT_PREFERENCES,
-          photoUri: 'https://images.unsplash.com/photo-1555041469-a586c61ea9bc?auto=format&fit=crop&w=1000&q=80',
-          consentGiven: true,
-          style: 'Scandinavian',
-          budgetChoice: '₹10,000–₹25,000',
-        },
-        variants: DEMO_VARIANTS,
-        selectedVariantId: 'var-balanced',
-        suggestions: DEMO_SUGGESTIONS,
-        products: DEMO_PRODUCTS,
-        sceneSettings: DEFAULT_SCENE_SETTINGS,
-      };
-      setSavedProjects([initialProject]);
-      setCurrentProject(initialProject);
+  // Load user's saved projects permanently from Supabase database
+  const loadSavedProjects = useCallback(async () => {
+    if (!user?.uid || !isSupabaseConfigured) {
+      // In offline/guest development mode, clear projects or leave as empty
+      if (!user) {
+        setSavedProjects([]);
+        setCurrentProject(null);
+      }
+      return;
     }
-  }, [user]);
+
+    try {
+      const { data, error } = await supabase
+        .from('design_projects')
+        .select('*')
+        .eq('user_id', user.uid)
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.warn('[DesignProject] Error fetching projects from Supabase:', error.message);
+        return;
+      }
+
+      if (data && data.length > 0) {
+        // Resolve private signed photo URLs for all projects
+        const mapped: DesignProject[] = await Promise.all(
+          data.map(async (row: any) => {
+            let signedUri = '';
+            if (row.original_photo_path) {
+              const fetchedSigned = await getSignedRoomPhotoUrl(row.original_photo_path, 3600);
+              signedUri = fetchedSigned || row.original_photo_path;
+            }
+
+            return {
+              id: row.id,
+              userId: row.user_id,
+              title: row.title,
+              originalPhotoPath: row.original_photo_path,
+              originalPhotoUri: signedUri,
+              status: row.status as GenerationStatus,
+              preferences: row.preferences || DEFAULT_PREFERENCES,
+              variants: row.variants || [],
+              suggestions: row.suggestions || [],
+              products: row.products || [],
+              sceneSettings: row.scene_settings || DEFAULT_SCENE_SETTINGS,
+              selectedVariantId: row.selected_variant_id,
+              error: row.error,
+              createdAt: row.created_at,
+              updatedAt: row.updated_at,
+            };
+          })
+        );
+
+        setSavedProjects(mapped);
+        if (!currentProject && mapped.length > 0) {
+          setCurrentProject(mapped[0]);
+        }
+      } else {
+        setSavedProjects([]);
+      }
+    } catch (err: any) {
+      console.warn('[DesignProject] Exception loading projects:', err.message);
+    }
+  }, [user, currentProject]);
+
+  useEffect(() => {
+    loadSavedProjects();
+  }, [user?.uid]);
 
   const setCategory = (catId: SpaceCategoryId, subId: string) => {
     setPreferences(prev => ({
@@ -138,24 +185,38 @@ export const DesignProjectProvider: React.FC<{ children: React.ReactNode }> = ({
     setStatus('generating');
     setErrorMessage(null);
 
+    const projectId = `proj-${Date.now()}`;
+    const effectiveUserId = user?.uid || 'guest-user';
+    let storagePath = '';
+    let effectivePhotoUrl = preferences.photoUri;
+
     try {
-      // 1. Upload captured photo to Supabase free storage if local file URI
-      let effectivePhotoUri = preferences.photoUri;
-      if (effectivePhotoUri && !effectivePhotoUri.startsWith('http')) {
-        try {
-          const uploadRes = await uploadRoomPhotoToSupabase(effectivePhotoUri);
-          if (uploadRes.success && uploadRes.publicUrl) {
-            effectivePhotoUri = uploadRes.publicUrl;
-            setPreferences(prev => ({ ...prev, photoUri: effectivePhotoUri }));
-          }
-        } catch (uploadErr) {
-          console.warn('Supabase photo upload note:', uploadErr);
+      // 1. Upload captured photo to Supabase private storage if user is authenticated and Supabase is configured
+      if (user?.uid && isSupabaseConfigured) {
+        const uploadRes = await uploadRoomPhotoToSupabase(
+          preferences.photoUri,
+          user.uid,
+          projectId
+        );
+
+        if (!uploadRes.success || !uploadRes.storagePath) {
+          throw new Error(uploadRes.error || 'Failed to securely upload room photo to storage.');
         }
+
+        storagePath = uploadRes.storagePath;
+        effectivePhotoUrl = uploadRes.signedUrl || preferences.photoUri;
       }
 
-      // 2. Attempt to invoke the Python FastAPI backend
-      const res = await requestDesignGeneration({ ...preferences, photoUri: effectivePhotoUri }, user?.uid || 'guest');
-      
+      // 2. Obtain Firebase ID token for protected backend endpoints
+      const idToken = user ? await auth?.currentUser?.getIdToken() : undefined;
+
+      // 3. Request generation from backend
+      const res = await requestDesignGeneration(
+        { ...preferences, photoUri: effectivePhotoUrl },
+        effectiveUserId,
+        idToken
+      );
+
       let variants: DesignVariant[] = DEMO_VARIANTS;
       let suggestions: ImprovementSuggestion[] = DEMO_SUGGESTIONS;
       let products: ProductRecommendation[] = DEMO_PRODUCTS;
@@ -167,28 +228,50 @@ export const DesignProjectProvider: React.FC<{ children: React.ReactNode }> = ({
         products = res.data.products || DEMO_PRODUCTS;
         isDemo = Boolean(res.data.isDemo);
       } else {
-        // Backend not currently reachable or in demo setup mode:
-        // We gracefully load realistic preview design data and explicitly tag it as demo
-        isDemo = true;
+        throw new Error(res.error || 'Backend design generation failed.');
       }
 
       setIsDemoGeneration(isDemo);
 
       const newProject: DesignProject = {
-        id: `proj-${Date.now()}`,
-        userId: user?.uid || 'guest-user',
+        id: projectId,
+        userId: effectiveUserId,
         title: `${preferences.style} ${preferences.subcategoryId.replace('-', ' ')}`,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
-        originalPhotoUri: preferences.photoUri,
+        originalPhotoUri: effectivePhotoUrl,
+        originalPhotoPath: storagePath,
         status: 'completed',
-        preferences: { ...preferences },
+        preferences: { ...preferences, photoUri: effectivePhotoUrl },
         variants,
         selectedVariantId: variants[1]?.id || variants[0]?.id,
         suggestions,
         products,
         sceneSettings: DEFAULT_SCENE_SETTINGS,
       };
+
+      // 4. Persist to Supabase Database
+      if (user?.uid && isSupabaseConfigured) {
+        const { error: insertError } = await supabase.from('design_projects').insert({
+          id: newProject.id,
+          user_id: user.uid,
+          title: newProject.title,
+          original_photo_path: storagePath || newProject.originalPhotoUri,
+          status: 'completed',
+          preferences: newProject.preferences,
+          variants: newProject.variants,
+          suggestions: newProject.suggestions,
+          products: newProject.products,
+          scene_settings: newProject.sceneSettings,
+          selected_variant_id: newProject.selectedVariantId,
+          created_at: newProject.createdAt,
+          updated_at: newProject.updatedAt,
+        });
+
+        if (insertError) {
+          console.warn('[DesignProject] Database insert note:', insertError.message);
+        }
+      }
 
       setCurrentProject(newProject);
       setSavedProjects(prev => [newProject, ...prev]);
@@ -201,26 +284,61 @@ export const DesignProjectProvider: React.FC<{ children: React.ReactNode }> = ({
     }
   };
 
-  const selectVariant = (variantId: string) => {
+  const selectVariant = async (variantId: string) => {
     if (currentProject) {
       setCurrentProject(prev => prev ? { ...prev, selectedVariantId: variantId } : null);
       setSavedProjects(prev => 
         prev.map(p => p.id === currentProject.id ? { ...p, selectedVariantId: variantId } : p)
       );
+
+      if (user?.uid && isSupabaseConfigured) {
+        try {
+          await supabase
+            .from('design_projects')
+            .update({ selected_variant_id: variantId, updated_at: new Date().toISOString() })
+            .eq('id', currentProject.id);
+        } catch (e: any) {
+          console.warn('[DesignProject] Error updating variant:', e.message);
+        }
+      }
     }
   };
 
-  const updateSceneSettings = (settings: Partial<ThreeDSceneSettings>) => {
+  const updateSceneSettings = async (settings: Partial<ThreeDSceneSettings>) => {
     if (currentProject) {
       const updatedSettings = { ...currentProject.sceneSettings, ...settings };
       setCurrentProject(prev => prev ? { ...prev, sceneSettings: updatedSettings } : null);
       setSavedProjects(prev =>
         prev.map(p => p.id === currentProject.id ? { ...p, sceneSettings: updatedSettings } : p)
       );
+
+      if (user?.uid && isSupabaseConfigured) {
+        try {
+          await supabase
+            .from('design_projects')
+            .update({ scene_settings: updatedSettings, updated_at: new Date().toISOString() })
+            .eq('id', currentProject.id);
+        } catch (e: any) {
+          console.warn('[DesignProject] Error updating scene settings:', e.message);
+        }
+      }
     }
   };
 
   const deleteProject = async (projectId: string): Promise<boolean> => {
+    const projectToDelete = savedProjects.find(p => p.id === projectId);
+
+    if (user?.uid && isSupabaseConfigured) {
+      try {
+        await supabase.from('design_projects').delete().eq('id', projectId);
+        if (projectToDelete?.originalPhotoPath) {
+          await supabase.storage.from('room-photos').remove([projectToDelete.originalPhotoPath]);
+        }
+      } catch (e: any) {
+        console.warn('[DesignProject] Error deleting project from Supabase:', e.message);
+      }
+    }
+
     setSavedProjects(prev => prev.filter(p => p.id !== projectId));
     if (currentProject?.id === projectId) {
       setCurrentProject(null);
@@ -256,6 +374,7 @@ export const DesignProjectProvider: React.FC<{ children: React.ReactNode }> = ({
         updateSceneSettings,
         deleteProject,
         loadProjectById,
+        refreshProjects: loadSavedProjects,
       }}
     >
       {children}

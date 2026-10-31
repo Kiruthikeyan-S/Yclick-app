@@ -167,6 +167,7 @@ export interface DesignProject {
   createdAt: string;
   updatedAt: string;
   originalPhotoUri: string;
+  originalPhotoPath?: string;
   status: GenerationStatus;
   preferences: DesignPreferences;
   variants: DesignVariant[];

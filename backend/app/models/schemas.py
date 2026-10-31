@@ -16,9 +16,9 @@ class DesignPreferencesModel(BaseModel):
     budgetChoice: str
     customBudget: Optional[str] = None
     style: str
-    itemsToKeep: List[str] = []
-    improvementGoals: List[str] = []
-    constraints: List[str] = []
+    itemsToKeep: List[str] = Field(default_factory=list)
+    improvementGoals: List[str] = Field(default_factory=list)
+    constraints: List[str] = Field(default_factory=list)
     additionalNotes: Optional[str] = None
     roomMeasurements: Optional[str] = None
     cityPincode: Optional[str] = None
@@ -27,6 +27,7 @@ class DesignPreferencesModel(BaseModel):
 class GenerateDesignRequest(BaseModel):
     userId: str
     preferences: DesignPreferencesModel
+    demoMode: Optional[bool] = False
 
 class DesignVariantModel(BaseModel):
     id: str
@@ -34,11 +35,11 @@ class DesignVariantModel(BaseModel):
     title: str
     imageUrl: str
     summary: str
-    proposedChanges: List[str]
+    proposedChanges: List[str] = Field(default_factory=list)
     estimatedBudgetRange: str
-    itemsPreserved: List[str]
-    pros: List[str]
-    limitations: List[str]
+    itemsPreserved: List[str] = Field(default_factory=list)
+    pros: List[str] = Field(default_factory=list)
+    limitations: List[str] = Field(default_factory=list)
 
 class ImprovementSuggestionModel(BaseModel):
     id: str
@@ -48,7 +49,7 @@ class ImprovementSuggestionModel(BaseModel):
     recommendedAction: str
     priority: str  # 'High' | 'Medium' | 'Low'
     difficulty: str  # 'Easy' | 'Moderate' | 'Professional Help'
-    materialsNeeded: List[str]
+    materialsNeeded: List[str] = Field(default_factory=list)
     estimatedCostRange: Optional[str] = None
 
 class ProductRecommendationModel(BaseModel):
@@ -60,16 +61,16 @@ class ProductRecommendationModel(BaseModel):
     price: Optional[float] = None
     currency: Optional[str] = '₹'
     merchant: Optional[str] = None
-    productUrl: str
-    isEssential: bool
+    productUrl: str = ''
+    isEssential: bool = False
     isDemo: Optional[bool] = False
 
 class GenerateDesignResponse(BaseModel):
     success: bool
     projectId: str
-    variants: List[DesignVariantModel]
-    suggestions: List[ImprovementSuggestionModel]
-    products: List[ProductRecommendationModel]
+    variants: List[DesignVariantModel] = Field(default_factory=list)
+    suggestions: List[ImprovementSuggestionModel] = Field(default_factory=list)
+    products: List[ProductRecommendationModel] = Field(default_factory=list)
     isDemo: bool = False
     message: Optional[str] = None
 
@@ -80,12 +81,13 @@ class RoomScores(BaseModel):
 
 class AnalyzeImageResponse(BaseModel):
     roomType: str
-    detectedObjects: List[str] = []
-    correctionsNeeded: List[str] = []
-    itemsToRemove: List[str] = []
-    diySelfImprovements: List[str] = []
+    detectedObjects: List[str] = Field(default_factory=list)
+    correctionsNeeded: List[str] = Field(default_factory=list)
+    itemsToRemove: List[str] = Field(default_factory=list)
+    diySelfImprovements: List[str] = Field(default_factory=list)
     suggestedTemplate: str = "Modern Scandinavian"
     scores: Optional[RoomScores] = None
     detectedLighting: Optional[str] = "Natural daylight with secondary shadows"
-    detectedFeatures: Optional[List[str]] = []
+    detectedFeatures: Optional[List[str]] = Field(default_factory=list)
     spatialNotes: Optional[str] = None
+    isDemo: bool = False
