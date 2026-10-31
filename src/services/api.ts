@@ -1,4 +1,5 @@
 import Constants from 'expo-constants';
+import { uploadAsync, FileSystemUploadType } from 'expo-file-system/legacy';
 import { 
   DesignPreferences, 
   DesignProject, 
@@ -103,19 +104,40 @@ export async function checkBackendHealth(): Promise<{ status: string; isLive: bo
 }
 
 export async function analyzeImage(photoUri: string, idToken?: string): Promise<ApiResponse<RoomAnalysisData>> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 35000); // 35s for vision AI
-
   try {
+    // 1. Native mobile multipart upload via FileSystem (eliminates 'Unsupported FormDataPart implementation' in Expo/Android)
+    if (photoUri.startsWith('file:') || photoUri.startsWith('content:') || photoUri.startsWith('/')) {
+      const uploadResult = await uploadAsync(`${API_BASE_URL}/api/designs/analyze`, photoUri, {
+        fieldName: 'file',
+        httpMethod: 'POST',
+        uploadType: FileSystemUploadType.MULTIPART,
+        headers: {
+          ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
+        },
+      });
+
+      if (uploadResult.status < 200 || uploadResult.status >= 300) {
+        let errMessage = `Analyze error: HTTP ${uploadResult.status}`;
+        try {
+          const parsed = JSON.parse(uploadResult.body);
+          if (parsed.detail) errMessage = parsed.detail;
+        } catch {
+          if (uploadResult.body) errMessage = uploadResult.body;
+        }
+        return { success: false, error: errMessage };
+      }
+
+      const data: RoomAnalysisData = JSON.parse(uploadResult.body);
+      return { success: true, data };
+    }
+
+    // 2. Web fallback: convert URI to Blob
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 35000);
+    const fileRes = await fetch(photoUri);
+    const blob = await fileRes.blob();
     const formData = new FormData();
-    const filename = photoUri.split('/').pop() || 'photo.jpg';
-    
-    // @ts-ignore React Native FormData
-    formData.append('file', {
-      uri: photoUri,
-      name: filename,
-      type: 'image/jpeg',
-    });
+    formData.append('file', blob, 'photo.jpg');
 
     const res = await fetch(`${API_BASE_URL}/api/designs/analyze`, {
       method: 'POST',
@@ -129,13 +151,12 @@ export async function analyzeImage(photoUri: string, idToken?: string): Promise<
 
     if (!res.ok) {
       const err = await res.text();
-      throw new Error(`Analyze error: ${res.status} - ${err}`);
+      return { success: false, error: `Analyze error: ${res.status} - ${err}` };
     }
 
     const data: RoomAnalysisData = await res.json();
     return { success: true, data };
   } catch (err: any) {
-    clearTimeout(timeoutId);
     return { success: false, error: err.message };
   }
 }

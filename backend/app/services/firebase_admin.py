@@ -69,6 +69,52 @@ def initialize_firebase_admin() -> bool:
 initialize_firebase_admin()
 
 
+_public_keys_cache: Dict[str, str] = {}
+_public_keys_cache_time: float = 0.0
+
+def get_google_public_keys() -> Dict[str, str]:
+    """Fetch and cache Google's public x509 certificates for Firebase ID token verification."""
+    global _public_keys_cache, _public_keys_cache_time
+    import time
+    import urllib.request
+    now = time.time()
+    if _public_keys_cache and (now - _public_keys_cache_time < 3600):
+        return _public_keys_cache
+    try:
+        url = "https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com"
+        req = urllib.request.Request(url, headers={"User-Agent": "YClick-Backend/1.0"})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            _public_keys_cache = json.loads(resp.read().decode())
+            _public_keys_cache_time = now
+            return _public_keys_cache
+    except Exception as e:
+        logger.warning(f"Failed to fetch Google public certs: {e}")
+        return _public_keys_cache
+
+
+def verify_via_public_keys(id_token: str) -> Dict[str, Any]:
+    """Cryptographically verify Firebase ID token using Google's public certificates."""
+    import jwt
+    from cryptography.x509 import load_pem_x509_certificate
+    header = jwt.get_unverified_header(id_token)
+    kid = header.get("kid")
+    keys = get_google_public_keys()
+    if not kid or kid not in keys:
+        raise ValueError("Invalid or unknown certificate key ID (kid)")
+    cert_pem = keys[kid]
+    cert_obj = load_pem_x509_certificate(cert_pem.encode())
+    decoded = jwt.decode(
+        id_token,
+        cert_obj.public_key(),
+        algorithms=["RS256"],
+        audience=FIREBASE_PROJECT_ID,
+        issuer=f"https://securetoken.google.com/{FIREBASE_PROJECT_ID}",
+    )
+    if "uid" not in decoded and "user_id" in decoded:
+        decoded["uid"] = decoded["user_id"]
+    return decoded
+
+
 def verify_firebase_id_token(id_token: str) -> Dict[str, Any]:
     """
     Verify Firebase Bearer ID token.
@@ -88,15 +134,17 @@ def verify_firebase_id_token(id_token: str) -> Dict[str, Any]:
         uid = id_token.replace("test-token-", "")
         return {"uid": uid, "sub": uid, "role": "authenticated", "email": f"{uid}@test.com"}
 
-    if not _firebase_initialized and not initialize_firebase_admin():
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Firebase Admin SDK is not configured on the server. Please provide FIREBASE_SERVICE_ACCOUNT_PATH.",
-        )
-
     try:
-        decoded_token = fb_auth.verify_id_token(id_token, check_revoked=True)
-        return decoded_token
+        # First attempt Firebase Admin SDK verification if credentials available
+        if _firebase_initialized:
+            try:
+                decoded_token = fb_auth.verify_id_token(id_token, check_revoked=False)
+                return decoded_token
+            except Exception as e:
+                logger.info(f"Firebase Admin SDK verification fallback: {e}")
+
+        # Cryptographically verify using Google's public certs (no service account file required)
+        return verify_via_public_keys(id_token)
     except fb_auth.RevokedIdTokenError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

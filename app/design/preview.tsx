@@ -18,6 +18,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import { useDesignProject } from '../../src/contexts/DesignProjectContext';
+import { useAuth } from '../../src/contexts/AuthContext';
 import { Colors } from '../../src/theme/colors';
 import { Spacing } from '../../src/theme/spacing';
 import { Header } from '../../src/components/Header';
@@ -31,6 +32,7 @@ import { auth } from '../../src/services/firebase';
 export default function PhotoPreviewScreen() {
   const router = useRouter();
   const { preferences, setPhotoUri, updatePreferences } = useDesignProject();
+  const { getIdToken } = useAuth();
   const [rotationDegree, setRotationDegree] = useState(0);
 
   // AI Vision & Diagnosis State
@@ -59,7 +61,10 @@ export default function PhotoPreviewScreen() {
 
     let idToken: string | undefined = undefined;
     try {
-      if (auth?.currentUser) {
+      const tok = await getIdToken();
+      if (tok) {
+        idToken = tok;
+      } else if (auth?.currentUser) {
         idToken = await auth.currentUser.getIdToken(false);
       }
     } catch (e) {
@@ -142,7 +147,10 @@ export default function PhotoPreviewScreen() {
 
     let idToken: string | undefined = undefined;
     try {
-      if (auth?.currentUser) {
+      const tok = await getIdToken();
+      if (tok) {
+        idToken = tok;
+      } else if (auth?.currentUser) {
         idToken = await auth.currentUser.getIdToken(false);
       }
     } catch (e) {
@@ -156,22 +164,18 @@ export default function PhotoPreviewScreen() {
       if (res.success && res.reply) {
         setMessages(prev => [...prev, { role: 'assistant', text: res.reply }]);
       } else {
-        // Fallback with practical architectural guidance
-        setMessages(prev => [
-          ...prev, 
-          { 
-            role: 'assistant', 
-            text: 'For optimal flow, position primary seating facing natural window light, install vertical floating shelves to clear floor clutter, and swap harsh overhead bulbs for a 2700K–3000K diffused warm lamp.' 
-          }
-        ]);
+        const errorMsg = res.error?.includes('401')
+          ? 'Authentication required. Please sign in to chat with the AI Spatial Architect.'
+          : (res.error || 'The AI Architect was temporarily unable to reply. Please check your connection and try again.');
+        setMessages(prev => [...prev, { role: 'assistant', text: errorMsg }]);
       }
-    } catch (err) {
+    } catch (err: any) {
       setChatLoading(false);
       setMessages(prev => [
         ...prev, 
         { 
           role: 'assistant', 
-          text: 'To balance this room: keep walking pathways at least 75cm clear, place a textured rug to anchor seating, and introduce warm ambient lighting in the corners.' 
+          text: `Connection error: ${err.message || 'Unable to reach the AI design assistant. Please check your network connection.'}` 
         }
       ]);
     }
