@@ -67,11 +67,14 @@ if (isFirebaseConfigured()) {
   try {
     app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
     
-    // Initialize Auth with standard getAuth fallback
+    // Initialize Auth with standard getAuth and React Native persistence fallback
     try {
-      auth = getAuth(app);
+      // @ts-ignore getReactNativePersistence is exported in React Native bundles
+      const { getReactNativePersistence } = require('firebase/auth');
+      const persistence = typeof getReactNativePersistence === 'function' ? getReactNativePersistence(AsyncStorage) : undefined;
+      auth = persistence ? initializeAuth(app, { persistence }) : getAuth(app);
     } catch {
-      auth = initializeAuth(app);
+      auth = getAuth(app);
     }
     
     db = getFirestore(app);
