@@ -63,7 +63,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         if (stored && isMounted) {
           const parsed = JSON.parse(stored) as UserProfile;
           setUser(parsed);
-          setLoading(false);
 
           // If auth.currentUser is not yet initialized in Firebase SDK, auto-heal session in background
           if (!auth?.currentUser && isFirebaseReady && auth) {
@@ -84,6 +83,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
       } catch (err) {
         console.warn('[Auth] Error restoring local session:', err);
+      } finally {
+        if (isMounted) {
+          setLoading(false);
+        }
       }
     };
     restoreLocalSession();
@@ -213,9 +216,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         // Ensure custom claims are synchronized before protected operations
         await syncCustomClaims(fbUser);
       } else {
+        // Do not wipe session if user was already restored from persistent AsyncStorage
         setUser(prev => {
-          if (prev && prev.uid === 'guest-user') return prev;
-          persistSession(null);
+          if (prev) return prev;
           return null;
         });
         setClaimsReady(false);
