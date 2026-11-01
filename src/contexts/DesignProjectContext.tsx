@@ -86,6 +86,7 @@ export const DesignProjectProvider: React.FC<{ children: React.ReactNode }> = ({
     const currentUid = user?.uid || null;
     if (previousUserUid.current !== currentUid) {
       previousUserUid.current = currentUid;
+      activeFetchUid.current = null;
       setSavedProjects([]);
       setCurrentProject(null);
       setPreferences(DEFAULT_PREFERENCES);
@@ -228,31 +229,41 @@ export const DesignProjectProvider: React.FC<{ children: React.ReactNode }> = ({
     setStatus('generating');
     setErrorMessage(null);
 
+    if (!user?.uid) {
+      setErrorMessage('Please sign in or create an account to redesign your space.');
+      setStatus('failed');
+      return false;
+    }
+
+    if (!isSupabaseConfigured) {
+      setErrorMessage('Storage is currently unavailable. Please verify cloud database configuration.');
+      setStatus('failed');
+      return false;
+    }
+
     const projectId = `proj-${Date.now()}`;
-    const effectiveUserId = user?.uid || 'guest-user';
+    const effectiveUserId = user.uid;
     let storagePath = '';
     let effectivePhotoUrl = preferences.photoUri;
 
     try {
       // 1. Upload captured photo to Supabase private storage first (Problem 11)
-      if (user?.uid && isSupabaseConfigured) {
-        const uploadRes = await uploadRoomPhotoToSupabase(
-          preferences.photoUri,
-          user.uid,
-          projectId
-        );
+      const uploadRes = await uploadRoomPhotoToSupabase(
+        preferences.photoUri,
+        user.uid,
+        projectId
+      );
 
-        // Problem 11: Stop workflow if upload fails; do not send local mobile URI to remote backend
-        if (!uploadRes.success || !uploadRes.storagePath) {
-          const failureMsg = uploadRes.error || 'Failed to upload room photo to secure storage. Please check connection.';
-          setErrorMessage(failureMsg);
-          setStatus('failed');
-          return false;
-        }
-
-        storagePath = uploadRes.storagePath;
-        effectivePhotoUrl = uploadRes.signedUrl || preferences.photoUri;
+      // Stop workflow if upload fails; do not send local mobile URI to remote backend
+      if (!uploadRes.success || !uploadRes.storagePath) {
+        const failureMsg = uploadRes.error || 'Failed to upload room photo to secure storage. Please check connection.';
+        setErrorMessage(failureMsg);
+        setStatus('failed');
+        return false;
       }
+
+      storagePath = uploadRes.storagePath;
+      effectivePhotoUrl = uploadRes.signedUrl || preferences.photoUri;
 
       // 2. Obtain fresh Firebase ID token for protected backend endpoint (Problem 1)
       const idToken = user ? await auth?.currentUser?.getIdToken(true) : undefined;
@@ -315,7 +326,9 @@ export const DesignProjectProvider: React.FC<{ children: React.ReactNode }> = ({
         // Problem 4: Check error on insert
         if (insertError) {
           console.error('[DesignProject] Database insert failed:', insertError.message);
-          setErrorMessage(`Saved locally, but database sync encountered an error: ${insertError.message}`);
+          setStatus('failed');
+          setErrorMessage('Failed to save project to permanent database: ' + insertError.message);
+          return false;
         }
       }
 

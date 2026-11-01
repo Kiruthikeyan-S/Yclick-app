@@ -258,25 +258,35 @@ class CloudflareInpaintingImageToImageProvider(BaseImageProvider):
         ]
         results = await asyncio.gather(*tasks)
 
-        # Problem 3 Fix: If real AI inpainting fails and not in demo mode, fail honestly
+        # Problem 5 Fix: All 3 redesign variants must be genuinely synthesized in production.
+        # Attempt a targeted retry for any individual variant that failed
+        for i, gen_uri in enumerate(results):
+            if gen_uri is None:
+                tier_id, p, strength = prompts[i]
+                logger.info(f"Retrying room image transformation for {tier_id}...")
+                results[i] = await self._transform_room_image(
+                    original_image_bytes, p, strength, tier_id, preferences.itemsToKeep
+                )
+
         successful_gens = [r for r in results if r is not None]
-        if len(successful_gens) == 0:
+
+        # If any variant failed and demo mode is not explicitly enabled, fail honestly
+        if len(successful_gens) < len(prompts):
             if demo_mode:
                 mock_provider = MockImageProvider()
                 return await mock_provider.generate_variants(preferences, demo_mode=True)
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="AI image-to-image provider could not synthesize room variants from the uploaded photo."
+                detail=f"AI image synthesis incomplete ({len(successful_gens)}/{len(prompts)} variants succeeded). Refusing to substitute mock images as real AI output in production. Please retry."
             )
 
-        # Build variants with generated image outputs
+        # Build variants with verified generated image outputs
         mock_provider = MockImageProvider()
         variants = await mock_provider.generate_variants(preferences, demo_mode=False)
 
         for i, gen_uri in enumerate(results):
-            if gen_uri:
-                variants[i].imageUrl = gen_uri
-                variants[i].title = variants[i].title.replace(" (Demo)", "")
+            variants[i].imageUrl = gen_uri
+            variants[i].title = variants[i].title.replace(" (Demo)", "")
 
         return variants
 

@@ -2,6 +2,8 @@ import { initializeApp, getApps, getApp, FirebaseApp } from 'firebase/app';
 import { 
   getAuth, 
   initializeAuth, 
+  // @ts-ignore getReactNativePersistence is available in react-native entrypoint of firebase/auth
+  getReactNativePersistence,
   Auth, 
   User, 
   onAuthStateChanged,
@@ -38,6 +40,7 @@ import {
   deleteObject 
 } from 'firebase/storage';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Platform } from 'react-native';
 import { UserProfile, DesignProject } from '../types';
 
 // YClick Firebase Production Configuration
@@ -67,11 +70,25 @@ if (isFirebaseConfigured()) {
   try {
     app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
     
-    // Initialize Auth with standard getAuth fallback
-    try {
-      auth = getAuth(app);
-    } catch {
-      auth = initializeAuth(app);
+    // Initialize Auth with AsyncStorage persistence for React Native / mobile (Problem 2 Fix)
+    if (Platform.OS === 'web') {
+      try {
+        auth = getAuth(app);
+      } catch {
+        auth = initializeAuth(app);
+      }
+    } else {
+      try {
+        if (typeof getReactNativePersistence === 'function') {
+          auth = initializeAuth(app, {
+            persistence: getReactNativePersistence(AsyncStorage)
+          });
+        } else {
+          auth = getAuth(app);
+        }
+      } catch {
+        auth = getAuth(app);
+      }
     }
     
     db = getFirestore(app);

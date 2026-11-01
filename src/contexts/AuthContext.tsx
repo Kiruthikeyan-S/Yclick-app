@@ -65,22 +65,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           setUser(parsed);
           setLoading(false);
 
-          // If auth.currentUser is not yet initialized in Firebase SDK, auto-heal session in background
-          if (!auth?.currentUser && isFirebaseReady && auth) {
-            try {
-              let cred;
-              try {
-                cred = await signInWithEmailAndPassword(auth, 'google.designer@yclick.design', 'GoogleDesigner2026!');
-              } catch {
-                cred = await createUserWithEmailAndPassword(auth, 'google.designer@yclick.design', 'GoogleDesigner2026!');
-              }
-              if (cred?.user && isMounted) {
-                await syncCustomClaims(cred.user);
-              }
-            } catch (e) {
-              console.warn('[Auth] Background session restore error:', e);
-            }
-          }
+
         }
       } catch (err) {
         console.warn('[Auth] Error restoring local session:', err);
@@ -129,7 +114,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } catch (e) {
       console.warn('[Auth] Custom claim sync note:', e);
     }
-    setClaimsReady(true); // Don't permanently block UI on network glitch
+    setClaimsReady(false);
     return false;
   };
 
@@ -142,22 +127,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     }
 
-    // Auto-heal active Firebase user session on mobile if auth.currentUser is not yet initialized
-    if (isFirebaseReady && auth) {
-      try {
-        let cred;
-        try {
-          cred = await signInWithEmailAndPassword(auth, 'google.designer@yclick.design', 'GoogleDesigner2026!');
-        } catch {
-          cred = await createUserWithEmailAndPassword(auth, 'google.designer@yclick.design', 'GoogleDesigner2026!');
-        }
-        if (cred?.user) {
-          return await cred.user.getIdToken(forceRefresh);
-        }
-      } catch (e) {
-        console.warn('[Auth] Auto-heal session exception:', e);
-      }
-    }
+
 
     return null;
   };
@@ -322,16 +292,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const loginWithGoogle = async (): Promise<{ success: boolean; error?: string }> => {
     try {
       if (!isFirebaseReady) {
-        const demo: UserProfile = {
-          uid: 'google-user-' + Date.now(),
-          email: 'google.designer@yclick.design',
-          displayName: 'Google Designer',
-          createdAt: new Date().toISOString(),
-          isEmailVerified: true,
-        };
-        setUser(demo);
-        await persistSession(demo);
-        return { success: true };
+        return { success: false, error: 'Firebase Authentication is not configured or unavailable.' };
       }
 
       const provider = new GoogleAuthProvider();
@@ -354,26 +315,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         await syncCustomClaims(fbUser);
         return { success: true };
       } else {
-        // Native mobile Google Sign-In with real Firebase user session and valid ID token
-        let fbUser;
-        try {
-          const res = await signInWithEmailAndPassword(auth!, 'google.designer@yclick.design', 'GoogleDesigner2026!');
-          fbUser = res.user;
-        } catch {
-          const res = await createUserWithEmailAndPassword(auth!, 'google.designer@yclick.design', 'GoogleDesigner2026!');
-          fbUser = res.user;
-        }
-        const profile: UserProfile = {
-          uid: fbUser.uid,
-          email: 'google.designer@yclick.design',
-          displayName: 'Google Space Designer',
-          createdAt: new Date().toISOString(),
-          isEmailVerified: true,
+        // Genuine Google OAuth message: Android/iOS requires registering native Google OAuth Client ID in Firebase Console
+        return { 
+          success: false, 
+          error: 'Google Sign-In on Android requires configuring Google OAuth in Firebase Console. Please register or sign in with your email and password below.' 
         };
-        setUser(profile);
-        await persistSession(profile);
-        await syncCustomClaims(fbUser);
-        return { success: true };
       }
     } catch (err: any) {
       console.warn('[Auth] Google sign-in exception:', err);
@@ -442,21 +388,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       await persistSession(null);
       return { success: true };
     } catch (err: any) {
-      // Fallback direct Firebase deletion if server is unreachable
-      try {
-        if (db && auth.currentUser) {
-          await deleteDoc(doc(db, 'users', auth.currentUser.uid));
-        }
-        if (auth.currentUser) {
-          await fbDeleteUser(auth.currentUser);
-        }
-        setUser(null);
-        setClaimsReady(false);
-        await persistSession(null);
-        return { success: true };
-      } catch (fbErr: any) {
-        return { success: false, error: fbErr.message || err.message || 'Failed to delete account. Please sign in again first.' };
-      }
+      console.error('[Auth] Server-side account deletion error:', err);
+      return { 
+        success: false, 
+        error: err.message || 'Failed to delete account and cloud project data. Server cleanup must succeed before account can be deleted.' 
+      };
     }
   };
 

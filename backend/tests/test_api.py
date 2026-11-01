@@ -154,3 +154,16 @@ def test_delete_account_success():
     data = response.json()
     assert data["success"] is True
     assert data["uid"] == "user-123"
+
+def test_no_shared_hardcoded_credentials_in_repo():
+    """Verify that no hardcoded shared credentials exist in the codebase."""
+    import os
+    src_dir = os.path.join(os.path.dirname(__file__), "..", "..", "src")
+    if os.path.exists(src_dir):
+        for root, _, files in os.walk(src_dir):
+            for file in files:
+                if file.endswith((".ts", ".tsx", ".js")):
+                    path = os.path.join(root, file)
+                    content = open(path, encoding="utf-8", errors="ignore").read()
+                    assert "google.designer@yclick.design" not in content, f"Hardcoded shared credential found in {path}"
+                    assert "GoogleDesigner2026!" not in content, f"Hardcoded shared password found in {path}"
