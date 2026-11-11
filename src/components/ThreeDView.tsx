@@ -7,12 +7,14 @@ import { ThreeDSceneSettings } from '../types';
 interface ThreeDViewProps {
   settings: ThreeDSceneSettings;
   isWalkthrough?: boolean;
+  photoUri?: string;
   style?: ViewStyle;
 }
 
 export const ThreeDView: React.FC<ThreeDViewProps> = ({
   settings,
   isWalkthrough = false,
+  photoUri,
   style,
 }) => {
   const webViewRef = useRef<WebView>(null);
@@ -116,6 +118,21 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
         backWall.position.set(0, 1.4, -2.75);
         backWall.receiveShadow = true;
         scene.add(backWall);
+
+        // Display user uploaded photo framed on back focal wall
+        if ("${photoUri || ''}") {
+          try {
+            const texLoader = new THREE.TextureLoader();
+            texLoader.setCrossOrigin('anonymous');
+            texLoader.load("${photoUri}", function(texture) {
+              const frameGeo = new THREE.PlaneGeometry(1.8, 1.2);
+              const frameMat = new THREE.MeshBasicMaterial({ map: texture });
+              const frameMesh = new THREE.Mesh(frameGeo, frameMat);
+              frameMesh.position.set(0, 1.6, -2.68);
+              scene.add(frameMesh);
+            });
+          } catch(e) {}
+        }
 
         const leftWall = new THREE.Mesh(new THREE.BoxGeometry(0.12, 2.8, 5.5), wallMat);
         leftWall.position.set(-2.75, 1.4, 0);

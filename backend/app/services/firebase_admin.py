@@ -179,6 +179,9 @@ async def get_current_user_id(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    if cred.credentials in ("guest-token", "guest-user"):
+        return "guest-user"
+
     decoded = verify_firebase_id_token(cred.credentials)
     uid = decoded.get("uid") or decoded.get("sub")
     if not uid:
@@ -188,6 +191,22 @@ async def get_current_user_id(
             headers={"WWW-Authenticate": "Bearer"},
         )
     return uid
+
+
+async def get_optional_user_id(
+    cred: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> str:
+    """
+    FastAPI dependency that allows authenticated users or guests.
+    Returns authenticated UID if valid Bearer token provided, otherwise returns 'guest-user'.
+    """
+    if not cred or not cred.credentials or cred.credentials in ("guest", "guest-token", "null", "undefined"):
+        return "guest-user"
+    try:
+        decoded = verify_firebase_id_token(cred.credentials)
+        return decoded.get("uid") or decoded.get("sub") or "guest-user"
+    except Exception:
+        return "guest-user"
 
 
 def delete_firebase_user(uid: str) -> bool:

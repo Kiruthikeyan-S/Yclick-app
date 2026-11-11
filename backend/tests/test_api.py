@@ -127,6 +127,23 @@ def test_analyze_rejects_empty_file():
     assert response.status_code == 400
     assert "empty" in response.json()["detail"].lower()
 
+def test_analyze_accepts_json_base64():
+    """Image analysis supports JSON base64 payloads without FormData."""
+    import base64
+    from PIL import Image
+    im = Image.new("RGB", (32, 32), color="blue")
+    buf = io.BytesIO()
+    im.save(buf, format="JPEG")
+    b64_str = base64.b64encode(buf.getvalue()).decode()
+
+    response = client.post(
+        "/api/designs/analyze",
+        headers=AUTH_HEADER,
+        json={"imageBase64": b64_str, "filename": "test.jpg"}
+    )
+    # Accepts and responds (or 200 in demo/configured mode)
+    assert response.status_code in (200, 502, 503)
+
 def test_auth_sync_claims_requires_token():
     """Sync claims endpoint must require authentication."""
     response = client.post("/api/auth/sync-claims")

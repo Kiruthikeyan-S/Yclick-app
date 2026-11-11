@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Platform, Alert } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -67,7 +67,15 @@ export default function SignupScreen() {
     if (res.success) {
       router.replace('/(tabs)');
     } else {
-      setError(res.error || 'Google Sign-Up failed.');
+      if (Platform.OS !== 'web') {
+        Alert.alert(
+          'Sign Up with Google Account',
+          'To sign up using your Google email address, please enter your name, your Gmail address, and your password below. A verification email will be dispatched to your Gmail inbox.',
+          [{ text: 'Got it' }]
+        );
+      } else {
+        setError(res.error || 'Google Sign-Up failed.');
+      }
     }
   };
 

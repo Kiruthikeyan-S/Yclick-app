@@ -1,5 +1,5 @@
 import Constants from 'expo-constants';
-import { uploadAsync, FileSystemUploadType } from 'expo-file-system/legacy';
+import { readAsStringAsync, EncodingType } from 'expo-file-system/legacy';
 import { 
   DesignPreferences, 
   DesignProject, 
@@ -17,21 +17,24 @@ export { RoomAnalysisData };
  * local Wi-Fi IP from Metro hostUri so backend requests never fail with loopback timeouts.
  */
 function resolveApiBaseUrl(): string {
-  // 1. If explicit environment variable is set
-  const envUrl = process.env.EXPO_PUBLIC_API_URL?.trim();
-  if (envUrl && !envUrl.includes('placeholder')) {
-    return envUrl;
-  }
-
-  // 2. Extract host from Expo Metro connection
+  // 1. Priority: Dynamically extract host IP from live Expo Metro connection
+  // Ensures seamless connectivity on any Wi-Fi, mobile hotspot, or USB tethering
   const hostUri = Constants.expoConfig?.hostUri || (Constants as any).manifest2?.extra?.expoClient?.hostUri;
   if (hostUri) {
     const ip = hostUri.split(':')[0];
-    return `http://${ip}:8000`;
+    if (ip && ip !== 'localhost' && ip !== '127.0.0.1') {
+      return `http://${ip}:8000`;
+    }
   }
 
-  // 3. Fallback to active Wi-Fi subnet
-  return 'http://192.168.88.8:8000';
+  // 2. Fallback to environment variable if explicitly configured
+  const envUrl = process.env.EXPO_PUBLIC_API_URL?.trim();
+  if (envUrl && !envUrl.includes('placeholder') && !envUrl.includes('192.168.88.8')) {
+    return envUrl;
+  }
+
+  // 3. Default active subnet fallback
+  return 'http://10.126.188.36:8000';
 }
 
 export const API_BASE_URL = resolveApiBaseUrl();
@@ -54,14 +57,15 @@ export async function askDesignerChat(
   idToken?: string
 ): Promise<{ success: boolean; reply: string; error?: string }> {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 15000); // 15s timeout
+  const timeoutId = setTimeout(() => controller.abort(), 25000); // 25s timeout for AI response
 
   try {
+    const bearer = idToken || 'guest-token';
     const res = await fetch(`${API_BASE_URL}/api/designs/chat`, {
       method: 'POST',
       headers: { 
         'Content-Type': 'application/json',
-        ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
+        Authorization: `Bearer ${bearer}`,
       },
       body: JSON.stringify({ messages, roomContext }),
       signal: controller.signal,
@@ -72,10 +76,16 @@ export async function askDesignerChat(
       const data = await res.json();
       return { success: true, reply: data.reply };
     }
+    const errText = await res.text();
+    let detail = `HTTP ${res.status}`;
+    try {
+      const parsed = JSON.parse(errText);
+      if (parsed.detail) detail = parsed.detail;
+    } catch {}
     return { 
       success: false, 
       reply: '', 
-      error: `HTTP ${res.status}` 
+      error: detail 
     };
   } catch (err: any) {
     clearTimeout(timeoutId);
@@ -104,60 +114,57 @@ export async function checkBackendHealth(): Promise<{ status: string; isLive: bo
 }
 
 export async function analyzeImage(photoUri: string, idToken?: string): Promise<ApiResponse<RoomAnalysisData>> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 45000); // 45s for Vision AI
+
   try {
-    // 1. Native mobile multipart upload via FileSystem (eliminates 'Unsupported FormDataPart implementation' in Expo/Android)
-    if (photoUri.startsWith('file:') || photoUri.startsWith('content:') || photoUri.startsWith('/')) {
-      const uploadResult = await uploadAsync(`${API_BASE_URL}/api/designs/analyze`, photoUri, {
-        fieldName: 'file',
-        httpMethod: 'POST',
-        uploadType: FileSystemUploadType.MULTIPART,
-        headers: {
-          ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
-        },
+    const bearer = idToken || 'guest-token';
+    let bodyPayload: { imageBase64?: string; photoUri?: string; filename?: string } = {};
+
+    if (photoUri.startsWith('http://') || photoUri.startsWith('https://')) {
+      // Remote URI: send URL for backend download
+      bodyPayload = { photoUri, filename: 'space.jpg' };
+    } else {
+      // Local image (file:// or content://): read as base64 - completely immune to FormData bugs
+      const base64Data = await readAsStringAsync(photoUri, {
+        encoding: EncodingType.Base64,
       });
-
-      if (uploadResult.status < 200 || uploadResult.status >= 300) {
-        let errMessage = `Analyze error: HTTP ${uploadResult.status}`;
-        try {
-          const parsed = JSON.parse(uploadResult.body);
-          if (parsed.detail) errMessage = parsed.detail;
-        } catch {
-          if (uploadResult.body) errMessage = uploadResult.body;
-        }
-        return { success: false, error: errMessage };
-      }
-
-      const data: RoomAnalysisData = JSON.parse(uploadResult.body);
-      return { success: true, data };
+      bodyPayload = { imageBase64: base64Data, filename: 'space.jpg' };
     }
-
-    // 2. Web fallback: convert URI to Blob
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 35000);
-    const fileRes = await fetch(photoUri);
-    const blob = await fileRes.blob();
-    const formData = new FormData();
-    formData.append('file', blob, 'photo.jpg');
 
     const res = await fetch(`${API_BASE_URL}/api/designs/analyze`, {
       method: 'POST',
       headers: {
-        ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${bearer}`,
       },
-      body: formData,
+      body: JSON.stringify(bodyPayload),
       signal: controller.signal,
     });
     clearTimeout(timeoutId);
 
     if (!res.ok) {
-      const err = await res.text();
-      return { success: false, error: `Analyze error: ${res.status} - ${err}` };
+      const errText = await res.text();
+      let errorMsg = `Analyze error: HTTP ${res.status}`;
+      try {
+        const parsed = JSON.parse(errText);
+        if (parsed.detail) errorMsg = parsed.detail;
+      } catch {
+        if (errText) errorMsg = errText;
+      }
+      return { success: false, error: errorMsg };
     }
 
     const data: RoomAnalysisData = await res.json();
     return { success: true, data };
   } catch (err: any) {
-    return { success: false, error: err.message };
+    clearTimeout(timeoutId);
+    return { 
+      success: false, 
+      error: err.name === 'AbortError' 
+        ? 'AI room scan timed out. Please try again.' 
+        : err.message || 'Analysis failed' 
+    };
   }
 }
 

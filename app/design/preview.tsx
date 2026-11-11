@@ -25,6 +25,7 @@ import { Header } from '../../src/components/Header';
 import { Button } from '../../src/components/Button';
 import { Card } from '../../src/components/Card';
 import { Badge } from '../../src/components/Badge';
+import { ThreeDView } from '../../src/components/ThreeDView';
 import { analyzeImage, askDesignerChat } from '../../src/services/api';
 import { RoomAnalysisData, DesignStyle } from '../../src/types';
 import { auth } from '../../src/services/firebase';
@@ -34,6 +35,7 @@ export default function PhotoPreviewScreen() {
   const { preferences, setPhotoUri, updatePreferences } = useDesignProject();
   const { getIdToken } = useAuth();
   const [rotationDegree, setRotationDegree] = useState(0);
+  const [viewMode, setViewMode] = useState<'photo' | '3d'>('photo');
 
   // AI Vision & Diagnosis State
   const [analyzing, setAnalyzing] = useState(false);
@@ -185,54 +187,103 @@ export default function PhotoPreviewScreen() {
     <SafeAreaView style={styles.safeArea}>
       <Header title="Room AI Diagnosis" onBackPress={() => router.back()} />
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-        {/* Photo Stage */}
-        <View style={styles.previewContainer}>
-          {photoUri ? (
-            <Image
-              source={{ uri: photoUri }}
-              style={[
-                styles.previewImage,
-                { transform: [{ rotate: `${rotationDegree}deg` }] },
-              ]}
-              resizeMode="cover"
-            />
-          ) : (
-            <View style={styles.noPhoto}>
-              <Text style={styles.noPhotoText}>No photo selected</Text>
-            </View>
-          )}
-
-          {/* Quick Edit Overlay */}
-          <View style={styles.photoTopBadges}>
-            <View style={[styles.scanBadge, analysisError ? { backgroundColor: 'rgba(220, 38, 38, 0.85)' } : null]}>
-              <Ionicons 
-                name={analyzing ? "sync-outline" : analysisError ? "alert-circle-outline" : "sparkles"} 
-                size={13} 
-                color="#FFFFFF" 
-              />
-              <Text style={styles.scanBadgeText}>
-                {analyzing 
-                  ? "Scanning Space..." 
-                  : analysisError 
-                    ? "Analysis Failed" 
-                    : diagnosis?.isDemo 
-                      ? "Demo Vision Mode" 
-                      : diagnosis 
-                        ? "AI Vision Inspected" 
-                        : "Ready for Inspection"}
-              </Text>
-            </View>
-          </View>
-
+        {/* View Mode Toggle: 2D Photo vs 3D Room Spatial Model */}
+        <View style={styles.viewModeToggleRow}>
           <TouchableOpacity
-            style={styles.rotateOverlayBtn}
-            onPress={handleRotate}
+            style={[styles.togglePill, viewMode === 'photo' && styles.togglePillActive]}
+            onPress={() => setViewMode('photo')}
             activeOpacity={0.8}
           >
-            <Ionicons name="refresh-outline" size={18} color="#FFFFFF" />
-            <Text style={styles.rotateText}>Rotate</Text>
+            <Ionicons name="image-outline" size={15} color={viewMode === 'photo' ? '#FFFFFF' : Colors.primary} />
+            <Text style={[styles.togglePillText, viewMode === 'photo' && styles.togglePillTextActive]}>
+              Room Photo
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.togglePill, viewMode === '3d' && styles.togglePillActive]}
+            onPress={() => setViewMode('3d')}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="cube-outline" size={15} color={viewMode === '3d' ? '#FFFFFF' : Colors.primary} />
+            <Text style={[styles.togglePillText, viewMode === '3d' && styles.togglePillTextActive]}>
+              3D Spatial Model
+            </Text>
           </TouchableOpacity>
         </View>
+
+        {/* View Stage */}
+        {viewMode === '3d' ? (
+          <View style={styles.threeDStageContainer}>
+            <ThreeDView
+              photoUri={photoUri}
+              settings={{
+                wallColor: '#EDF4EE',
+                floorType: 'wood',
+                lightingPreset: 'daylight',
+                furnitureVisible: { seating: true, storage: true, tables: true, plants: true, lighting: true },
+                cameraPreset: 'perspective',
+              }}
+              style={styles.inlineThreeD}
+            />
+            <TouchableOpacity 
+              style={styles.expandStudioBtn}
+              onPress={() => router.push('/design/three-d')}
+              activeOpacity={0.85}
+            >
+              <Ionicons name="expand-outline" size={14} color="#FFFFFF" />
+              <Text style={styles.expandStudioText}>Open 3D Studio & Walkthrough</Text>
+            </TouchableOpacity>
+          </View>
+        ) : (
+          <View style={styles.previewContainer}>
+            {photoUri ? (
+              <Image
+                source={{ uri: photoUri }}
+                style={[
+                  styles.previewImage,
+                  { transform: [{ rotate: `${rotationDegree}deg` }] },
+                ]}
+                resizeMode="cover"
+              />
+            ) : (
+              <View style={styles.noPhoto}>
+                <Text style={styles.noPhotoText}>No photo selected</Text>
+              </View>
+            )}
+
+            {/* Quick Edit Overlay */}
+            <View style={styles.photoTopBadges}>
+              <View style={[styles.scanBadge, analysisError ? { backgroundColor: 'rgba(220, 38, 38, 0.85)' } : null]}>
+                <Ionicons 
+                  name={analyzing ? "sync-outline" : analysisError ? "alert-circle-outline" : "sparkles"} 
+                  size={13} 
+                  color="#FFFFFF" 
+                />
+                <Text style={styles.scanBadgeText}>
+                  {analyzing 
+                    ? "Scanning Space..." 
+                    : analysisError 
+                      ? "Analysis Failed" 
+                      : diagnosis?.isDemo 
+                        ? "Demo Vision Mode" 
+                        : diagnosis 
+                          ? "AI Vision Inspected" 
+                          : "Ready for Inspection"}
+                </Text>
+              </View>
+            </View>
+
+            <TouchableOpacity
+              style={styles.rotateOverlayBtn}
+              onPress={handleRotate}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="refresh-outline" size={18} color="#FFFFFF" />
+              <Text style={styles.rotateText}>Rotate</Text>
+            </TouchableOpacity>
+          </View>
+        )}
 
         {/* AI Scanning Indicator */}
         {analyzing ? (
@@ -482,6 +533,74 @@ const styles = StyleSheet.create({
   scrollContent: {
     padding: Spacing.screenPadding,
     paddingBottom: Spacing.xxl,
+  },
+  viewModeToggleRow: {
+    flexDirection: 'row',
+    backgroundColor: '#EAEFEA',
+    borderRadius: 24,
+    padding: 3,
+    marginBottom: Spacing.sm,
+    gap: 4,
+  },
+  togglePill: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 7,
+    borderRadius: 20,
+    gap: 6,
+  },
+  togglePillActive: {
+    backgroundColor: Colors.primary,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.15,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+  togglePillText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: Colors.textSecondary,
+  },
+  togglePillTextActive: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+  },
+  threeDStageContainer: {
+    width: '100%',
+    height: 310,
+    borderRadius: Spacing.borderRadiusLg,
+    overflow: 'hidden',
+    position: 'relative',
+    marginBottom: Spacing.md,
+    borderWidth: 1.5,
+    borderColor: Colors.border,
+  },
+  inlineThreeD: {
+    width: '100%',
+    height: '100%',
+    borderRadius: Spacing.borderRadiusLg,
+    borderWidth: 0,
+  },
+  expandStudioBtn: {
+    position: 'absolute',
+    top: Spacing.sm,
+    left: Spacing.sm,
+    backgroundColor: 'rgba(36, 76, 62, 0.92)',
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 14,
+    gap: 5,
+    zIndex: 10,
+  },
+  expandStudioText: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '600',
   },
   previewContainer: {
     width: '100%',

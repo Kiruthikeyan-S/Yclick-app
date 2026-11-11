@@ -56,8 +56,13 @@ export default function ForgotPasswordScreen() {
             <View style={styles.successBox}>
               <Text style={styles.successTitle}>Check your inbox</Text>
               <Text style={styles.successText}>
-                We've sent a password reset link to {email}. Follow the instructions in the email to regain access.
+                We've sent a password reset link to <Text style={{ fontWeight: '700' }}>{email}</Text>. Follow the instructions in the email to regain access.
               </Text>
+              <View style={styles.spamNotice}>
+                <Text style={styles.spamNoticeText}>
+                  📬 <Text style={{ fontWeight: '700' }}>Check Spam Folder:</Text> Automated Firebase emails may land in your <Text style={{ fontWeight: '700' }}>Spam</Text> or <Text style={{ fontWeight: '700' }}>Promotions</Text> folder. Look for sender <Text style={{ fontStyle: 'italic' }}>noreply@yclick-59688.firebaseapp.com</Text>.
+                </Text>
+              </View>
               <Button
                 title="Back to Sign In"
                 onPress={() => router.replace('/(auth)/login')}
@@ -143,6 +148,19 @@ const styles = StyleSheet.create({
     color: Colors.textPrimary,
     lineHeight: 18,
     marginBottom: Spacing.md,
+  },
+  spamNotice: {
+    backgroundColor: '#F0FDF4',
+    padding: Spacing.sm,
+    borderRadius: Spacing.borderRadiusSm,
+    borderWidth: 1,
+    borderColor: '#BBF7D0',
+    marginBottom: Spacing.md,
+  },
+  spamNoticeText: {
+    fontSize: 12,
+    color: '#166534',
+    lineHeight: 16,
   },
   backBtn: {
     width: '100%',

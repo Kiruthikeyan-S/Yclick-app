@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Platform, Alert } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -47,7 +47,15 @@ export default function LoginScreen() {
     if (res.success) {
       router.replace('/(tabs)');
     } else {
-      setError(res.error || 'Google Sign-In failed.');
+      if (Platform.OS !== 'web') {
+        Alert.alert(
+          'Sign In with Google Account',
+          'To sign in using your Google account, please enter your Gmail address (e.g. kiruthikeyangiri@gmail.com) and password below.',
+          [{ text: 'Continue with Email' }]
+        );
+      } else {
+        setError(res.error || 'Google Sign-In failed.');
+      }
     }
   };
 
