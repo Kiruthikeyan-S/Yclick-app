@@ -31,7 +31,7 @@ function resolveApiBaseUrl(): string {
   }
 
   // 3. Fallback to active Wi-Fi subnet
-  return 'http://192.168.0.7:8000';
+  return 'http://192.168.88.8:8000';
 }
 
 export const API_BASE_URL = resolveApiBaseUrl();
